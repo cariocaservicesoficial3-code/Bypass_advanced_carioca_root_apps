@@ -1,0 +1,26 @@
+# Build intermediário dos módulos
+**/build/
+**/*.class
+
+# Decompilados (muito grandes; sempre podem ser regerados a partir do APK alvo)
+**/decompiled/
+**/jadx_out/
+**/apktool_out/
+
+# APKs de apps alvo (NUNCA commitar — somente módulos nossos)
+target_apks/
+*.apks
+*.xapk
+# manter apenas os APKs gerados por nós em apps/*/artifacts/
+!apps/*/artifacts/*.apk
+
+# Sistema
+.DS_Store
+*.swp
+*.tmp
+*~
+
+# Editor
+.idea/
+.vscode/
+*.iml
