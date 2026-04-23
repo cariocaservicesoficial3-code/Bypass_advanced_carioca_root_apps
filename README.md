@@ -53,7 +53,7 @@ Veja `docs/checkpoint_protocol.md` para o protocolo completo de leitura/escrita.
 
 | # | App | Pacote | Versão | Motores neutralizados | Status | Pasta |
 |---|-----|--------|--------|------------------------|--------|-------|
-| 1 | KMV (a confirmar) | a definir | 4.83.101 | a definir | em análise | [apps/kmv](apps/kmv/) |
+| 1 | KMV (Ipiranga) | `com.gigigo.ipirangaconectcar` | 4.83.101 | RootBeer, CashShield, PlayIntegrity | Concluído (v1.0.0) | [apps/kmv](apps/kmv/) |
 
 (Tabela atualizada automaticamente a cada novo módulo.)
 

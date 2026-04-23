@@ -165,3 +165,17 @@ E em runtime:
 ```
 
 Isso facilita correlacionar logs do LSPosed Manager com as fases.
+
+### 1.9 CashShield / PartnerShield
+
+SDK de anti-fraude corporativo extremamente agressivo e pesado.
+- Lib nativa: `libcashshieldptr-native-lib.so` (frequentemente >300 KB)
+- Classes-chave: `com.shield.ptr.internal.NativeUtils`
+- Fingerprints: strings `"cashshield"`, `"shield/ptr"`, símbolos JNI como `isFoundMagisk`, `isFridaDetected`, `isVirtualXposedDetected`
+- Conhece caminhos específicos de Magisk Delta, LSPosed Manager, SandHook, etc.
+
+**Bypass**:
+O CashShield delega todas as suas verificações C++ para a ponte Java através de métodos `public native` na classe `NativeUtils`. Como LSPosed pode hookar métodos `native` declarados em Java, podemos neutralizar o motor inteiro na borda:
+- Hookar ~26 métodos booleanos (`isFoundMagisk`, `isFridaDetected`, `isAccessedSuperuserApk`, etc.) para retornar `false`
+- Hookar métodos int (`getArpCache`, `isPathExists`, `jitCacheCount`) para retornar `0`
+- Hookar métodos string (`getHostsModifiedTime`, `getBaseApkPath`, `getNativeAppVersion`, `getNativePackage`) para retornar valores stock/seguros
