@@ -5,7 +5,6 @@ import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.SystemClock;
 import android.provider.Settings;
-import android.util.Base64;
 import android.util.Log;
 
 import de.robv.android.xposed.XC_MethodHook;
@@ -25,19 +24,17 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * v1.5.4 — STRING + BASE64 NUCLEAR HOOK + DNS SINKHOLE
+ * v1.5.5 — STABLE NETWORK HOOKS + DNS SINKHOLE
  *
- * Diagnóstico final (tmnc.har):
- *   - O UUID 870949b0-2a4b-4a70-9f8d-9c80a1bb433a... é IMORTAL.
- *   - Hooks em OkHttp (Headers, Builder, Chain) NÃO pegaram ele.
- *   - Explicação: O app pode estar usando OkHttp ofuscado ou Native Code.
+ * Diagnóstico v1.5.4:
+ *   - O hook em StringBuilder.toString() quebrou o app (instável).
+ *   - O app parou de carregar recursos básicos.
  *
- * Estratégia v1.5.4:
- *   1. Hook em android.util.Base64: O header x-mobile é Base64. Se o app codificar
- *      algo contendo o UUID antigo, nós interceptamos e trocamos.
- *   2. Hook em java.lang.StringBuilder.toString(): Capturar a montagem da string x-mobile.
- *   3. Hook em okhttp3.Request.header(String): Hook de leitura no objeto final.
- *   4. DNS Sinkhole mantido (PayPal, ViewPkg, AppsFlyer, etc.).
+ * Estratégia v1.5.5:
+ *   1. REMOVIDO: StringBuilder e Base64 hooks (causadores de instabilidade).
+ *   2. REFORÇADO: Hook em okhttp3.Headers (métodos de leitura get/values).
+ *   3. REFORÇADO: Hook em okhttp3.Request (método header).
+ *   4. MANTIDO: DNS Sinkhole (PayPal, ViewPkg, AppsFlyer, etc).
  */
 public class PersistentIdHooks {
 
@@ -76,59 +73,61 @@ public class PersistentIdHooks {
     }
 
     public void install(LoadPackageParam lpparam) {
-        Log.e(TAG, "PersistentIdHooks v1.5.4 starting. TARGETING IMMORTAL UUID.");
+        Log.e(TAG, "PersistentIdHooks v1.5.5 starting. STABILITY FOCUS.");
 
         hookDnsSinkhole(lpparam);
-        hookBase64(lpparam);                // CAMADA 1 — Interceptar codificação do header
-        hookStringBuilder(lpparam);         // CAMADA 2 — Interceptar montagem da string
-        hookOkHttpFinalRequest(lpparam);    // CAMADA 3 — Hook de leitura no Request
-        
-        // Camadas de base mantidas
-        hookSharedPreferences(lpparam);
-        hookGsfId(lpparam);
-        hookAndroidId(lpparam);
-        hookUptimeSpoof(lpparam);
-        hookMagnesCollectAndSubmit(lpparam);
-        hookUrlConnectionBlocking(lpparam);
+        hookOkHttpStable(lpparam);          // CAMADA 1 — OkHttp estável (Headers e Request)
+        hookSharedPreferences(lpparam);     // CAMADA 2 — SharedPreferences
+        hookGsfId(lpparam);                 // CAMADA 3 — GSF ID
+        hookAndroidId(lpparam);             // CAMADA 4 — Android ID
+        hookUptimeSpoof(lpparam);           // CAMADA 5 — Device Uptime
+        hookMagnesCollectAndSubmit(lpparam); // CAMADA 6 — Magnes SDK
+        hookUrlConnectionBlocking(lpparam); // CAMADA 7 — URL.openConnection
     }
 
-    // ==================== CAMADA 1 — BASE64 HOOK ====================
-    private void hookBase64(LoadPackageParam lpparam) {
+    // ==================== CAMADA 1 — OKHTTP STABLE HOOKS ====================
+    private void hookOkHttpStable(LoadPackageParam lpparam) {
+        // Hook em okhttp3.Headers (get e values)
         try {
-            XposedHelpers.findAndHookMethod(Base64.class, "encodeToString", byte[].class, int.class, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                    byte[] input = (byte[]) param.args[0];
-                    if (input == null) return;
-                    String s = new String(input);
-                    if (s.contains(BAD_UUID_PART)) {
-                        String newS = s.replace(BAD_UUID_PART, SPOOFED_UUID);
-                        param.args[0] = newS.getBytes();
-                        Log.e(TAG, "BASE64.encodeToString: IMMORTAL UUID DETECTED AND REPLACED!");
-                    }
-                }
-            });
-        } catch (Throwable t) {}
-    }
-
-    // ==================== CAMADA 2 — STRINGBUILDER HOOK ====================
-    private void hookStringBuilder(LoadPackageParam lpparam) {
-        try {
-            XposedHelpers.findAndHookMethod(StringBuilder.class, "toString", new XC_MethodHook() {
+            Class<?> headersClass = XposedHelpers.findClass("okhttp3.Headers", lpparam.classLoader);
+            
+            // Hook no método get(String)
+            XposedHelpers.findAndHookMethod(headersClass, "get", String.class, new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                    String s = (String) param.getResult();
-                    if (s != null && s.contains(BAD_UUID_PART)) {
-                        param.setResult(s.replace(BAD_UUID_PART, SPOOFED_UUID));
-                        Log.e(TAG, "StringBuilder.toString: IMMORTAL UUID REPLACED!");
+                    String name = (String) param.args[0];
+                    String value = (String) param.getResult();
+                    if ("x-mobile".equalsIgnoreCase(name) && value != null && value.contains(BAD_UUID_PART)) {
+                        param.setResult(value.replace(BAD_UUID_PART, SPOOFED_UUID));
+                        Log.e(TAG, "Headers.get('x-mobile'): UUID REPLACED");
                     }
                 }
             });
-        } catch (Throwable t) {}
-    }
 
-    // ==================== CAMADA 3 — OKHTTP FINAL REQUEST ====================
-    private void hookOkHttpFinalRequest(LoadPackageParam lpparam) {
+            // Hook no método values(String)
+            XposedHelpers.findAndHookMethod(headersClass, "values", String.class, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                    String name = (String) param.args[0];
+                    if ("x-mobile".equalsIgnoreCase(name)) {
+                        List<String> values = (List<String>) param.getResult();
+                        if (values != null) {
+                            List<String> newValues = new ArrayList<>();
+                            for (String v : values) {
+                                if (v != null && v.contains(BAD_UUID_PART)) {
+                                    newValues.add(v.replace(BAD_UUID_PART, SPOOFED_UUID));
+                                } else {
+                                    newValues.add(v);
+                                }
+                            }
+                            param.setResult(newValues);
+                        }
+                    }
+                }
+            });
+        } catch (Throwable t) { Log.e(TAG, "OkHttp Headers hook failed: " + t.getMessage()); }
+
+        // Hook em okhttp3.Request.header(String)
         try {
             Class<?> requestClass = XposedHelpers.findClass("okhttp3.Request", lpparam.classLoader);
             XposedHelpers.findAndHookMethod(requestClass, "header", String.class, new XC_MethodHook() {
@@ -138,7 +137,7 @@ public class PersistentIdHooks {
                     String value = (String) param.getResult();
                     if ("x-mobile".equalsIgnoreCase(name) && value != null && value.contains(BAD_UUID_PART)) {
                         param.setResult(value.replace(BAD_UUID_PART, SPOOFED_UUID));
-                        Log.e(TAG, "Request.header('x-mobile'): IMMORTAL UUID REPLACED!");
+                        Log.e(TAG, "Request.header('x-mobile'): UUID REPLACED");
                     }
                 }
             });
