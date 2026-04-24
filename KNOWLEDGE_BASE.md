@@ -244,3 +244,15 @@ XposedBridge.hookAllMethods(PackageManager.class, "getInstalledPackages", new XC
 // Bloquear o envio direto para o d.viewpkg.com
 XposedHelpers.findAndHookMethod("Ba.b", lpparam.classLoader, "c", String.class, String.class, String.class, XC_MethodReplacement.returnConstant(null));
 ```
+
+## 6. Motor ZAIG_FRAUD e Fingerprinting Persistente (v1.4)
+**Descrição:** O motor de fraude da Zaig (zaig.com.br) não é um SDK visível que faz chamadas diretas do app. Ele atua no **backend** (server-side). O app envia um payload de cadastro para o endpoint `/carteira/api/v1/account-hub/signup-full`, e o backend KMV envia esses dados para o Zaig.
+O Zaig cruza os dados do cadastro (CPF, e-mail) com os fingerprints de hardware enviados por outros motores (como PayPal Magnes).
+Se o usuário tenta cadastrar várias vezes e recebe erro, o Zaig marca o `ANDROID_ID` ou `Build.SERIAL` na blacklist. A partir desse momento, qualquer tentativa daquele celular é negada com o status `WAITING_FOR_ZAIG_FRAUD_PART_ONE` seguido de `REPROVED`.
+
+**Estratégia de Bypass (Identity Spoofing):**
+- Rotacionar o `Settings.Secure.ANDROID_ID` gerando 16 caracteres hexadecimais aleatórios a cada inicialização do app.
+- Rotacionar o `Build.SERIAL` para um serial válido (ex: `POCO` + 12 chars hex).
+- Rotacionar `PackageInfo.firstInstallTime` para simular que o app foi instalado há meses (e não há 5 minutos).
+- Forçar fingerprints stock de aparelhos Xiaomi/POCO em `Build.FINGERPRINT`, `Build.HOST`, `Build.DISPLAY`.
+- Ao fazer isso, o backend Zaig enxerga o aparelho como um "celular totalmente novo" a cada tentativa, evadindo a blacklist.

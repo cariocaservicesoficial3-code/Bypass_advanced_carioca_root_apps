@@ -1,13 +1,15 @@
 package com.manus.kmv_bypass;
 
+import android.util.Log;
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
 public class MainHook implements IXposedHookLoadPackage {
     public static final String TAG = "[KMVBypass] ";
+    public static final String TAG_LOG = "KMVBypass";   // logcat-friendly tag
     public static final String TARGET = "com.gigigo.ipirangaconectcar";
-    public static final String VERSION = "1.3.0";
+    public static final String VERSION = "1.4.0";
 
     @Override
     public void handleLoadPackage(LoadPackageParam lpparam) throws Throwable {
@@ -17,6 +19,10 @@ public class MainHook implements IXposedHookLoadPackage {
         log("   KMV Root Bypass v" + VERSION + " — ACTIVATED");
         log("   Target: " + TARGET);
         log("==========================================");
+
+        // Identity spoof PRIMEIRO (gera nova identidade antes de qualquer coleta)
+        try { new IdentitySpoofHooks().install(lpparam); log("[OK] IdentitySpoofHooks installed"); }
+        catch (Throwable t) { log("[FAIL] IdentitySpoofHooks: " + t); }
 
         try { new RootBeerHooks().install(lpparam); log("[OK] RootBeerHooks installed"); }
         catch (Throwable t) { log("[FAIL] RootBeerHooks: " + t); }
@@ -39,5 +45,9 @@ public class MainHook implements IXposedHookLoadPackage {
         log("All hook groups installed.");
     }
 
-    public static void log(String msg) { XposedBridge.log(TAG + msg); }
+    /** Log dual: XposedBridge.log + android.util.Log.e (logcat) */
+    public static void log(String msg) {
+        XposedBridge.log(TAG + msg);
+        Log.e(TAG_LOG, msg);
+    }
 }
