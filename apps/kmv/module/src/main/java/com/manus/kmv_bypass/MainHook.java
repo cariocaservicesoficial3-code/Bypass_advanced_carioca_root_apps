@@ -7,7 +7,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 public class MainHook implements IXposedHookLoadPackage {
     public static final String TAG = "[KMVBypass] ";
     public static final String TARGET = "com.gigigo.ipirangaconectcar";
-    public static final String VERSION = "1.0.0";
+    public static final String VERSION = "1.1.0";
 
     @Override
     public void handleLoadPackage(LoadPackageParam lpparam) throws Throwable {
@@ -29,6 +29,9 @@ public class MainHook implements IXposedHookLoadPackage {
 
         try { new LowLevelHooks().install(lpparam); log("[OK] LowLevelHooks installed"); }
         catch (Throwable t) { log("[FAIL] LowLevelHooks: " + t); }
+
+        try { new FingerprintHooks().install(lpparam); log("[OK] FingerprintHooks installed"); }
+        catch (Throwable t) { log("[FAIL] FingerprintHooks: " + t); }
 
         log("All hook groups installed.");
     }

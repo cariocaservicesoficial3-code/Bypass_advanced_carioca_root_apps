@@ -1,34 +1,32 @@
-# Checkpoint — 2026-04-23 (Sessão KMV Concluída)
+# Checkpoint — 2026-04-23 (Sessão KMV v1.1)
 
 ## Estado atual
 - App em foco: **KMV (Km de Vantagens Ipiranga)** (`com.gigigo.ipirangaconectcar`)
 - Versão analisada: 4.83.101
-- Fase atual: **Módulo finalizado, testado e artefato gerado**
-- Última build: `apps/kmv/artifacts/KMV-RootBypass-v1.0.0.apk` (MD5: `9dcfc58017d45ddd9b3faba87115032b`)
+- Fase atual: **Erro #1004 diagnosticado via HAR, Módulo v1.1 finalizado**
+- Última build: `apps/kmv/artifacts/KMV-RootBypass-v1.1.0.apk` (MD5: `4852d18b5b8e0585366a771920533a9d`)
 
-## Resumo da sessão
-- Extraído `KMV_4.83.101.apks` (split APK arm64-v8a)
-- Identificados múltiplos motores de segurança: RootBeer (ofuscado), CashShield / PartnerShield (extremamente agressivo), Play Integrity, FaceTec, iProov e libs *packed* (provavelmente AppSealing/Promon).
-- Mapeada a classe `com.shield.ptr.internal.NativeUtils` do CashShield e interceptados seus 30+ métodos JNI (`isFoundMagisk`, `isFridaDetected`, etc.) via LSPosed, contornando toda a checagem nativa sem patch binário.
-- Mapeados os 16 métodos ofuscados da `com.scottyab.rootbeer.RootBeer` e `RootBeerNative`.
-- Módulo LSPosed criado, compilado e assinado (v1+v2+v3) com sucesso.
-- Criada documentação completa em `apps/kmv/README.md` e `reverse_engineering.md`.
+## Resumo da sessão (v1.1)
+- O usuário reportou o erro **#1004** durante o cadastro e forneceu um log HAR da rede.
+- A análise do HAR revelou que o erro ocorre no endpoint `api.kmdevantagens.com.br/kmv/api/v1/minimum_signup/generate_mfa`.
+- Identificamos o campo bloqueador: `deviceFingerprintSessionId` no header `x-mobile` e o payload `data` criptografado.
+- Descobrimos que o KMV utiliza o **AllowMe SDK (Serasa IDF)** para coletar um fingerprint agressivo do dispositivo, enviando os dados via ECDH para `idf-api.serasaexperian.com.br`. O Serasa retorna um token de validação que o KMV repassa ao backend.
+- Também descobrimos a presença do motor anti-fraude comportamental **Incognia SDK** (`service*.br.incognia.com`).
+- Implementamos a classe `FingerprintHooks.java` na v1.1, interceptando os callbacks do `AllowMe.collect()` para forçar um token limpo e neutralizamos o `Incognia.trackEvent()`.
+- Realizamos spoofing complementar da classe `Build` (FINGERPRINT, BOOTLOADER, DISPLAY) para cobrir lacunas lidas pelo AllowMe.
 
-## Conhecimento novo
-- **CashShield / PartnerShield**: Adicionado ao `KNOWLEDGE_BASE.md`. Um motor C++ pesado que pode ser inteiramente bypassado hookando sua interface JNI em `com.shield.ptr.internal.NativeUtils`.
-- Confirmado que o bypass "client-side" do RootBeerNative (`wasNativeLibraryLoaded` -> `true` e `checkForRoot` -> `0`) continua sendo a estratégia ouro contra ofuscações R8.
-
-## Credenciais
-- **Keystore**: `shared/module.keystore` — senha `manus2026`, alias `manus`, validade 10000 dias
+## Conhecimento novo (KNOWLEDGE_BASE)
+- **AllowMe SDK (Serasa IDF)**: Motor de fingerprinting focado em telemetria server-side. Pode ser neutralizado interceptando os callbacks `CollectCallback`, `StartCallback` e lambdas Kotlin da classe `br.com.allowme.android.allowmesdk.AllowMe`.
+- **Incognia SDK**: Motor comportamental de anti-fraude que cruza dados de localização e sensores. Neutralizado hookando os métodos estáticos de `com.incognia.Incognia`.
 
 ## Próximos passos
-1. Entregar o artefato `KMV-RootBypass-v1.0.0.apk` ao usuário.
-2. Aguardar feedback do usuário (testes em dispositivo real).
-3. Caso o app ainda detecte algo, investigar as bibliotecas *packed* (`libec7f.so`, `libddab.so`, etc.) que podem conter motores secundários de detecção (ex: DexGuard, Promon SHIELD).
+1. Entregar o artefato `KMV-RootBypass-v1.1.0.apk` ao usuário.
+2. Aguardar novo teste de cadastro no app.
+3. Caso ainda haja bloqueio server-side, o próximo passo será analisar o payload do Google Enterprise reCAPTCHA (chamadas `mrr`, `mri`, `mlg`) que também estava presente no HAR.
 
 ## Como retomar
 ```bash
 cd ~/Bypass_advanced_carioca_root_apps
 git pull
-# O módulo do KMV está pronto em apps/kmv/artifacts/
+# O módulo do KMV v1.1 está pronto em apps/kmv/artifacts/
 ```
