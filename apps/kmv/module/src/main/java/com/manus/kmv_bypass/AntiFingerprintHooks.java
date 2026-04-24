@@ -10,21 +10,30 @@ import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
+import java.lang.reflect.Method;
+import java.net.NetworkInterface;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
 /**
- * v1.2 — Camadas que sobreviveram após v1.1 (descobertas no segundo HAR):
- *   1. PayPal Magnes (lib.android.paypal.com.magnessdk) — RDA/Risk Data Aggregator,
- *      coleta fingerprint completo + envia para c.paypal.com/r/v1/device/client-metadata.
- *      Backend KMV consome o pairingId / clientMetadataId e cruza com sua telemetria.
- *   2. ViewPkg / AppView (Ba/b) — coleta lista completa de pacotes instalados e envia
- *      para d.viewpkg.com. Detecta apps suspeitos (Magisk Manager, LSPosed Manager,
- *      Frida server, etc.) que normalmente passariam por hide_my_applist.
- *   3. PackageManager filter — defesa em profundidade caso outros SDKs façam queryAllPackages.
+ * v1.3 — Correção cirúrgica após diagnóstico:
+ *   A v1.2 falhou porque o hook em `magnessdk.c.a()/.b()` só modifica o DTO retornado ao caller,
+ *   mas o HTTP POST para c.paypal.com JÁ FOI FEITO antes. Precisamos atacar o coletor real.
+ *   Também `Ba.b.c()` não é o método que envia — é só um logger Datadog.
+ *
+ * Agora atacamos:
+ *   1. **lib.android.paypal.com.magnessdk.C.x(...)** (7 args) — gera o JSONObject final.
+ *      Hook retorna JSONObject vazio → c.paypal.com recebe `{}`.
+ *   2. **Ba.b.b(JSONObject)** — é o método que realmente POSTa para d.viewpkg.com via OkHttp.
+ *      Hook retorna void → nenhum POST é enviado.
+ *   3. **NetworkInterface.getNetworkInterfaces()** — filtra tun*, ppp*, ipsec* globalmente.
+ *      Neutraliza VPN_setting=tun0 e ip_addresses VPN (dispara qualquer anti-fraude).
+ *   4. PackageManager filter (mantido da v1.2).
  */
 public class AntiFingerprintHooks {
 
@@ -51,109 +60,146 @@ public class AntiFingerprintHooks {
         "com.devadvance.rootcloak", "com.devadvance.rootcloakplus",
         "com.formyhm.hideroot", "com.formyhm.hiderootPremium",
         "com.amphoras.hidemyroot", "com.amphoras.hidemyrootadfree",
-        // Hookers
-        "com.android.shell" // exemplo
+        // Sniffers / proxies
+        "com.guoshi.httpcanary.premium", "com.ylhyh.httpcanary",
+        "com.minhui.networkcapture", "jp.co.taosoftware.android.packetcapture",
+        "com.egorovandreyrm.pcapremote", "app.greyshirts.firewall",
+        // Reqable / packet sniffers modernos
+        "com.reqable.android", "com.reqable",
+        "com.evbadroid.proxymonclassic", "com.evbadroid.proxymon"
     ));
 
+    private static final String[] VPN_INTERFACE_PREFIXES = {
+        "tun", "tap", "ppp", "ipsec", "utun", "vxlan"
+    };
+
     public void install(LoadPackageParam lpparam) {
-        hookPayPalMagnes(lpparam);
-        hookViewPkg(lpparam);
+        hookPayPalMagnesReal(lpparam);
+        hookViewPkgReal(lpparam);
+        hookNetworkInterfaceGlobal(lpparam);
         hookPackageManagerFilter(lpparam);
     }
 
     /**
-     * PayPal Magnes — neutraliza o submit de fingerprint.
-     * Estratégia: hook em d.f(Context, sourceAppId, additionalData) que é o collectAndSubmit().
-     * Ao invés de impedir (pode quebrar fluxo), forçamos um payload mínimo e estável.
+     * CAMADA 1 — PayPal Magnes ATACA REAL
      *
-     * Como o app só usa o pairingId/clientMetadataId que retorna no JSONObject c.b(),
-     * fazemos hook em c.b() para devolver um pairingId fixo "limpo".
-     * E hook em c.a() para devolver um JSONObject vazio ou neutro.
+     * A classe `lib.android.paypal.com.magnessdk.C` (em smali_classes9) tem:
+     *   - x(e, w, x, String, String, HashMap, Handler) : JSONObject → GERADOR FINAL
+     *   - d() : JSONObject
+     *   - A() : List (network interfaces)
+     *   - L(Context) : JSONObject
+     *   - t(WifiManager) : ArrayList (MAC addrs)
+     *
+     * Hookando x() retornando JSONObject vazio, o payload que vai pro POST é "{}".
      */
-    private void hookPayPalMagnes(LoadPackageParam lpparam) {
-        // 1) Hook em lib.android.paypal.com.magnessdk.c.b() — getPayPalClientMetaDataId
+    private void hookPayPalMagnesReal(LoadPackageParam lpparam) {
+        // 1) Hook no gerador do JSONObject final (C.x com 7 args)
         try {
-            XposedHelpers.findAndHookMethod(
-                "lib.android.paypal.com.magnessdk.c",
-                lpparam.classLoader,
-                "b",
-                XC_MethodReplacement.returnConstant("00000000000000000000000000000000")
-            );
-            MainHook.log("Magnes c.b() (pairingId) -> stable zeros");
+            Class<?> clsC = XposedHelpers.findClass("lib.android.paypal.com.magnessdk.C", lpparam.classLoader);
+            int hooked = 0;
+            for (Method m : clsC.getDeclaredMethods()) {
+                if (m.getName().equals("x") && m.getParameterTypes().length == 7 && m.getReturnType().getName().equals("org.json.JSONObject")) {
+                    XposedBridge.hookMethod(m, new XC_MethodReplacement() {
+                        @Override
+                        protected Object replaceHookedMethod(MethodHookParam param) {
+                            try {
+                                org.json.JSONObject j = new org.json.JSONObject();
+                                j.put("is_rooted", false);
+                                j.put("is_emulator", false);
+                                j.put("app_id", "com.gigigo.ipirangaconectcar");
+                                j.put("os_type", "Android");
+                                j.put("os_version", "11");
+                                return j;
+                            } catch (Throwable t) {
+                                return null;
+                            }
+                        }
+                    });
+                    MainHook.log("Magnes C.x(7args) NEUTRALIZED -> minimal JSON");
+                    hooked++;
+                }
+            }
+            if (hooked == 0) MainHook.log("Magnes C.x(7args) NOT FOUND (class changed?)");
         } catch (Throwable t) {
-            MainHook.log("Magnes c.b() hook failed: " + t.getMessage());
+            MainHook.log("Magnes C.x() hook failed: " + t.getMessage());
         }
 
-        // 2) Hook em lib.android.paypal.com.magnessdk.c.a() — getPayloadJson (devolve null)
+        // 2) Hook em C.d() → retorna JSONObject vazio (fallback adicional)
         try {
             XposedHelpers.findAndHookMethod(
-                "lib.android.paypal.com.magnessdk.c",
+                "lib.android.paypal.com.magnessdk.C",
                 lpparam.classLoader,
-                "a",
+                "d",
                 new XC_MethodReplacement() {
                     @Override
-                    protected Object replaceHookedMethod(MethodHookParam param) throws Throwable {
-                        try {
-                            return new org.json.JSONObject();
-                        } catch (Throwable t) {
-                            return null;
-                        }
+                    protected Object replaceHookedMethod(MethodHookParam param) {
+                        return new org.json.JSONObject();
                     }
                 }
             );
-            MainHook.log("Magnes c.a() (payloadJson) -> empty JSONObject");
+            MainHook.log("Magnes C.d() -> empty JSONObject");
         } catch (Throwable t) {
-            MainHook.log("Magnes c.a() hook failed: " + t.getMessage());
+            MainHook.log("Magnes C.d() hook failed: " + t.getMessage());
         }
 
-        // 3) Hook em lib.android.paypal.com.magnessdk.d.f(Context, String, HashMap)
-        //    para devolver um c "limpo" sem fazer collect/submit nenhum.
+        // 3) Hook em C.A() → lista vazia (sem network interfaces)
         try {
             XposedHelpers.findAndHookMethod(
-                "lib.android.paypal.com.magnessdk.d",
+                "lib.android.paypal.com.magnessdk.C",
                 lpparam.classLoader,
-                "f",
-                "android.content.Context", String.class, "java.util.HashMap",
-                new XC_MethodHook() {
+                "A",
+                new XC_MethodReplacement() {
                     @Override
-                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        // Não substituímos o objeto retornado para não quebrar o fluxo,
-                        // mas o c.b() e c.a() já estão hookados acima.
-                        MainHook.log("Magnes d.f() executed (c.b/c.a hooks will neutralize output)");
+                    protected Object replaceHookedMethod(MethodHookParam param) {
+                        return new ArrayList<>();
                     }
                 }
             );
-            MainHook.log("Magnes d.f() (collectAndSubmit) wrapped");
+            MainHook.log("Magnes C.A() -> empty list (no network interfaces)");
         } catch (Throwable t) {
-            MainHook.log("Magnes d.f() hook failed: " + t.getMessage());
+            MainHook.log("Magnes C.A() hook failed: " + t.getMessage());
+        }
+
+        // 4) Hook em C.J(Context) → boolean false (is_rooted check interno)
+        try {
+            XposedHelpers.findAndHookMethod(
+                "lib.android.paypal.com.magnessdk.C",
+                lpparam.classLoader,
+                "J",
+                "android.content.Context",
+                XC_MethodReplacement.returnConstant(false)
+            );
+            MainHook.log("Magnes C.J(Context) -> false (root check)");
+        } catch (Throwable t) {
+            MainHook.log("Magnes C.J(Context) hook failed: " + t.getMessage());
+        }
+
+        // 5) Hook em C.t(WifiManager) → ArrayList vazio (MAC addrs)
+        try {
+            XposedHelpers.findAndHookMethod(
+                "lib.android.paypal.com.magnessdk.C",
+                lpparam.classLoader,
+                "t",
+                "android.net.wifi.WifiManager",
+                new XC_MethodReplacement() {
+                    @Override
+                    protected Object replaceHookedMethod(MethodHookParam param) {
+                        return new ArrayList<>();
+                    }
+                }
+            );
+            MainHook.log("Magnes C.t(WifiManager) -> empty ArrayList (no MAC addrs)");
+        } catch (Throwable t) {
+            MainHook.log("Magnes C.t() hook failed: " + t.getMessage());
         }
     }
 
     /**
-     * ViewPkg/AppView (Ba/b) — neutraliza o envio da lista de pacotes para d.viewpkg.com.
-     * Estratégia: substituir o método principal Ba/b.c(String, String, String) por no-op.
+     * CAMADA 2 — ViewPkg REAL: o POST é feito em Ba.b.b(JSONObject).
+     * O método Ba.b.c() é só um logger Datadog (inofensivo).
      */
-    private void hookViewPkg(LoadPackageParam lpparam) {
-        try {
-            XposedHelpers.findAndHookMethod(
-                "Ba.b",
-                lpparam.classLoader,
-                "c",
-                String.class, String.class, String.class,
-                new XC_MethodReplacement() {
-                    @Override
-                    protected Object replaceHookedMethod(MethodHookParam param) throws Throwable {
-                        MainHook.log("ViewPkg Ba/b.c() blocked (no packages sent to d.viewpkg.com)");
-                        return null;
-                    }
-                }
-            );
-            MainHook.log("ViewPkg Ba/b.c() neutralized");
-        } catch (Throwable t) {
-            MainHook.log("ViewPkg Ba/b.c hook failed: " + t.getMessage());
-        }
-
-        // Bloquear também o callback b(JSONObject) caso seja chamado por outro caminho
+    private void hookViewPkgReal(LoadPackageParam lpparam) {
+        // 1) Hook Ba.b.b(JSONObject) → MethodReplacement void (bloqueia POST)
         try {
             XposedHelpers.findAndHookMethod(
                 "Ba.b",
@@ -162,26 +208,108 @@ public class AntiFingerprintHooks {
                 "org.json.JSONObject",
                 new XC_MethodReplacement() {
                     @Override
-                    protected Object replaceHookedMethod(MethodHookParam param) throws Throwable {
-                        MainHook.log("ViewPkg Ba/b.b(JSONObject) intercepted (no-op)");
-                        return null;
+                    protected Object replaceHookedMethod(MethodHookParam param) {
+                        MainHook.log("ViewPkg Ba.b.b(JSONObject) BLOCKED -> no POST to d.viewpkg.com");
+                        return null; // void return
                     }
                 }
             );
-        } catch (Throwable ignored) {}
+            MainHook.log("ViewPkg Ba.b.b(JSONObject) BLOCKED");
+        } catch (Throwable t) {
+            MainHook.log("ViewPkg Ba.b.b hook failed: " + t.getMessage());
+        }
+
+        // 2) Hook Ba.b.a(JSONObject) synthetic (chama b via try/catch)
+        try {
+            XposedHelpers.findAndHookMethod(
+                "Ba.b",
+                lpparam.classLoader,
+                "a",
+                "org.json.JSONObject",
+                XC_MethodReplacement.returnConstant(null)
+            );
+            MainHook.log("ViewPkg Ba.b.a(JSONObject) synthetic BLOCKED");
+        } catch (Throwable t) {
+            MainHook.log("ViewPkg Ba.b.a hook failed: " + t.getMessage());
+        }
     }
 
     /**
-     * Filtro de PackageManager — defesa em profundidade.
-     * Remove pacotes suspeitos de getInstalledPackages, getInstalledApplications
-     * e queryIntentActivities. Cobre VIEWPKG, MAGNES, e qualquer SDK futuro.
+     * CAMADA 3 — NetworkInterface GLOBAL spoof.
+     * Remove VPN interfaces (tun, tap, ppp, ipsec, utun, vxlan) do getNetworkInterfaces().
+     * Isso neutraliza VPN detection tanto em Magnes quanto em qualquer outro SDK futuro.
+     */
+    private void hookNetworkInterfaceGlobal(LoadPackageParam lpparam) {
+        try {
+            XposedHelpers.findAndHookMethod(
+                NetworkInterface.class,
+                "getNetworkInterfaces",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        Object r = param.getResult();
+                        if (r instanceof Enumeration) {
+                            List<NetworkInterface> kept = new ArrayList<>();
+                            Enumeration<?> en = (Enumeration<?>) r;
+                            while (en.hasMoreElements()) {
+                                Object o = en.nextElement();
+                                if (o instanceof NetworkInterface) {
+                                    NetworkInterface ni = (NetworkInterface) o;
+                                    String name = ni.getName().toLowerCase();
+                                    boolean suspicious = false;
+                                    for (String pref : VPN_INTERFACE_PREFIXES) {
+                                        if (name.startsWith(pref)) { suspicious = true; break; }
+                                    }
+                                    if (!suspicious) kept.add(ni);
+                                }
+                            }
+                            param.setResult(Collections.enumeration(kept));
+                            MainHook.log("NetworkInterface.getNetworkInterfaces() filtered ("
+                                + kept.size() + " kept)");
+                        }
+                    }
+                }
+            );
+            MainHook.log("NetworkInterface.getNetworkInterfaces() VPN filter installed");
+        } catch (Throwable t) {
+            MainHook.log("NetworkInterface filter failed: " + t.getMessage());
+        }
+
+        // getByName("tun0") / getByName("tun1") → null
+        try {
+            XposedHelpers.findAndHookMethod(
+                NetworkInterface.class,
+                "getByName",
+                String.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (param.args.length > 0 && param.args[0] instanceof String) {
+                            String n = ((String) param.args[0]).toLowerCase();
+                            for (String pref : VPN_INTERFACE_PREFIXES) {
+                                if (n.startsWith(pref)) {
+                                    param.setResult(null);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            );
+            MainHook.log("NetworkInterface.getByName filter installed");
+        } catch (Throwable t) {
+            MainHook.log("NetworkInterface.getByName hook failed: " + t.getMessage());
+        }
+    }
+
+    /**
+     * CAMADA 4 — PackageManager filter (mantida da v1.2, ampliada com sniffers).
      */
     private void hookPackageManagerFilter(LoadPackageParam lpparam) {
         try {
-            // getInstalledPackages(int)
             XposedBridge.hookAllMethods(PackageManager.class, "getInstalledPackages", new XC_MethodHook() {
                 @Override
-                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                protected void afterHookedMethod(MethodHookParam param) {
                     Object result = param.getResult();
                     if (result instanceof List<?>) {
                         List<PackageInfo> filtered = new ArrayList<>();
@@ -199,10 +327,9 @@ public class AntiFingerprintHooks {
             });
             MainHook.log("PackageManager.getInstalledPackages filtered");
 
-            // getInstalledApplications(int)
             XposedBridge.hookAllMethods(PackageManager.class, "getInstalledApplications", new XC_MethodHook() {
                 @Override
-                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                protected void afterHookedMethod(MethodHookParam param) {
                     Object result = param.getResult();
                     if (result instanceof List<?>) {
                         List<ApplicationInfo> filtered = new ArrayList<>();
@@ -220,10 +347,9 @@ public class AntiFingerprintHooks {
             });
             MainHook.log("PackageManager.getInstalledApplications filtered");
 
-            // getPackageInfo(String, int) — retornar NameNotFoundException se for suspeito
             XposedBridge.hookAllMethods(PackageManager.class, "getPackageInfo", new XC_MethodHook() {
                 @Override
-                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                protected void beforeHookedMethod(MethodHookParam param) {
                     if (param.args.length > 0 && param.args[0] instanceof String) {
                         String pkg = (String) param.args[0];
                         if (SUSPICIOUS_PACKAGES.contains(pkg)) {
@@ -232,12 +358,10 @@ public class AntiFingerprintHooks {
                     }
                 }
             });
-            MainHook.log("PackageManager.getPackageInfo filters suspicious pkgs");
 
-            // getApplicationInfo(String, int)
             XposedBridge.hookAllMethods(PackageManager.class, "getApplicationInfo", new XC_MethodHook() {
                 @Override
-                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                protected void beforeHookedMethod(MethodHookParam param) {
                     if (param.args.length > 0 && param.args[0] instanceof String) {
                         String pkg = (String) param.args[0];
                         if (SUSPICIOUS_PACKAGES.contains(pkg)) {
@@ -246,8 +370,7 @@ public class AntiFingerprintHooks {
                     }
                 }
             });
-            MainHook.log("PackageManager.getApplicationInfo filters suspicious pkgs");
-
+            MainHook.log("PackageManager.getPackageInfo/getApplicationInfo filtered");
         } catch (Throwable t) {
             MainHook.log("PackageManager filter install failed: " + t.getMessage());
         }

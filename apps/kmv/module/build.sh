@@ -2,7 +2,7 @@
 set -euo pipefail
 
 NAME="kmv_bypass"
-VERSION="1.2.0"
+VERSION="1.3.0"
 PKG="com.manus.${NAME}"
 OUT="$(pwd)/../artifacts"
 BUILD="$(pwd)/build"
