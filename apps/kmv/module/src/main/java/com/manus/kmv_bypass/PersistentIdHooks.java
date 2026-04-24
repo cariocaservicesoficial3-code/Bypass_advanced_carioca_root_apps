@@ -29,27 +29,27 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * v1.5 — PERSISTENT ID HOOKS + HTTP BLOCKING (Nuclear Strategy)
+ * v1.5.1 — DNS SINKHOLE + HTTP BLOCKING + ID ROTATION + X-MOBILE UUID
  *
- * Diagnóstico dos 4 HARs (PRIMEIRO → ÚLTIMO):
- *   - Os hooks v1.4 na classe C do Magnes NÃO impediram o envio do payload completo.
- *   - O Magnes SDK v5.5.1 constrói e envia o payload por um caminho HTTP interno
- *     que bypassa os hooks nos métodos geradores de JSON.
- *   - Dados persistentes NUNCA mudaram entre sessões:
- *     * magnes_guid: 06441a0f-30c2-440d-8ed0-0eea1f645a4f (FIXO)
- *     * app_guid: e787081b-b442-4b5b-9c5b-3fd9db7ca6da (FIXO)
- *     * gsf_id: 34f59cc76e211d30 (FIXO)
- *     * app_first_install_time: 1776989122086 (FIXO)
- *   - ViewPkg continua enviando 18 requisições por sessão.
- *   - VPN (tun0) detectada nos primeiros HARs.
+ * Diagnóstico pós v1.5.0 (hj.har):
+ *   - c.paypal.com BLOQUEADO com sucesso (0 requisições Magnes)
+ *   - d.viewpkg.com AINDA ATIVO (18 requisições) — OkHttp hook não pegou
+ *     porque ViewPkg usa classloader/instância OkHttp diferente
+ *   - UUID no header x-mobile FIXO: 870949b0-2a4b-4a70-...(hash)
+ *   - Incognia ainda ativo (service2/4.br.incognia.com)
+ *   - AppsFlyer enviando 66 requisições com fingerprint
  *
- * Estratégia v1.5 (Nuclear):
- *   1. BLOQUEAR HTTP POST para c.paypal.com e d.viewpkg.com no OkHttpClient
- *   2. Rotacionar magnes_guid e app_guid nas SharedPreferences
- *   3. Spoofar gsf_id (Google Services Framework ID)
- *   4. Interceptar SystemClock.elapsedRealtime() para device_uptime falso
- *   5. Limpar SharedPreferences do Magnes ao iniciar
- *   6. Interceptar o URL builder para bloquear requisições de telemetria
+ * Estratégia v1.5.1:
+ *   1. DNS SINKHOLE: InetAddress.getByName/getAllByName → 127.0.0.1 para domínios bloqueados
+ *      (impossível de bypassar — funciona para QUALQUER client HTTP)
+ *   2. HTTP BLOCKING: OkHttpClient.newCall() mantido como camada extra
+ *   3. X-MOBILE HEADER: Interceptar OkHttp Request.Builder.addHeader/header para rotacionar UUID
+ *   4. SharedPreferences: Limpar prefs do Magnes
+ *   5. GSF ID + Android ID: Spoof completo
+ *   6. Device Uptime: Offset aleatório
+ *   7. Magnes SDK: Neutralizar coleta
+ *   8. URL.openConnection: Fallback blocking
+ *   9. Advertising ID: Spoof GAID
  */
 public class PersistentIdHooks {
 
@@ -65,25 +65,24 @@ public class PersistentIdHooks {
     private static final long SPOOFED_INSTALL_TIME;
     private static final long SPOOFED_UPDATE_TIME;
     private static final String SPOOFED_UUID;
+    private static final String SPOOFED_UUID_HASH;
 
-    // Domínios a bloquear
+    // Domínios a bloquear via DNS sinkhole + HTTP
     private static final Set<String> BLOCKED_DOMAINS = new HashSet<>(Arrays.asList(
         "c.paypal.com",
         "d.viewpkg.com",
         "b.stats.paypal.com",
         "t.paypal.com",
-        "www.paypalobjects.com"
+        "www.paypalobjects.com",
+        "api-m.paypal.com"
     ));
 
-    // Chaves de SharedPreferences do Magnes a interceptar
-    private static final Set<String> MAGNES_PREF_KEYS = new HashSet<>(Arrays.asList(
-        "app_guid", "APP_GUID",
-        "magnes_guid", "MAGNES_GUID",
-        "magnes_guid_id", "magnes_guid_created_at",
-        "risk_session_id", "pairing_id",
-        "dc_id", "mg_id",
-        "installation_id", "install_id",
-        "device_id", "deviceId"
+    // Domínios de telemetria adicionais a bloquear
+    private static final Set<String> TELEMETRY_DOMAINS = new HashSet<>(Arrays.asList(
+        "service2.br.incognia.com",
+        "service3.br.incognia.com",
+        "service4.br.incognia.com",
+        "idf-api.serasaexperian.com.br"
     ));
 
     // SharedPreferences names do Magnes
@@ -96,14 +95,13 @@ public class PersistentIdHooks {
 
     static {
         long now = System.currentTimeMillis();
-        // Install time: entre 60 e 300 dias atrás
         long daysAgo = 60 + (long)(RNG.nextDouble() * 240);
         SPOOFED_INSTALL_TIME = now - (daysAgo * 86400000L);
         SPOOFED_UPDATE_TIME = SPOOFED_INSTALL_TIME + (long)(RNG.nextDouble() * (now - SPOOFED_INSTALL_TIME));
-        // Uptime offset: adicionar entre 1 e 7 dias para parecer device ligado há tempo
         SPOOFED_UPTIME_OFFSET = (1 + (long)(RNG.nextDouble() * 6)) * 86400000L;
-        // UUID para o header x-mobile
+        // UUID composto para x-mobile: UUID + hash SHA1-like
         SPOOFED_UUID = UUID.randomUUID().toString();
+        SPOOFED_UUID_HASH = randomHex(40);
     }
 
     private static String randomHex(int chars) {
@@ -115,197 +113,270 @@ public class PersistentIdHooks {
     }
 
     public void install(LoadPackageParam lpparam) {
-        Log.e(TAG, "PersistentIdHooks v1.5 starting. NEW IDENTITY:");
+        Log.e(TAG, "PersistentIdHooks v1.5.1 starting. NEW IDENTITY:");
         Log.e(TAG, "  APP_GUID     = " + SPOOFED_APP_GUID);
         Log.e(TAG, "  MAGNES_GUID  = " + SPOOFED_MAGNES_GUID);
         Log.e(TAG, "  GSF_ID       = " + SPOOFED_GSF_ID);
         Log.e(TAG, "  ANDROID_ID   = " + SPOOFED_ANDROID_ID);
         Log.e(TAG, "  INSTALL_TIME = " + SPOOFED_INSTALL_TIME);
         Log.e(TAG, "  UUID         = " + SPOOFED_UUID);
+        Log.e(TAG, "  UUID_HASH    = " + SPOOFED_UUID_HASH);
 
-        hookOkHttpBlocking(lpparam);
-        hookSharedPreferences(lpparam);
-        hookGsfId(lpparam);
-        hookAndroidId(lpparam);
-        hookUptimeSpoof(lpparam);
-        hookMagnesCollectAndSubmit(lpparam);
-        hookUrlConnectionBlocking(lpparam);
-        hookAdvertisingId(lpparam);
+        hookDnsSinkhole(lpparam);           // CAMADA 1 — DNS sinkhole (impossível bypassar)
+        hookOkHttpBlocking(lpparam);        // CAMADA 2 — OkHttp blocking (backup)
+        hookXMobileHeader(lpparam);         // CAMADA 3 — x-mobile UUID rotation
+        hookSharedPreferences(lpparam);     // CAMADA 4 — SharedPreferences
+        hookGsfId(lpparam);                 // CAMADA 5 — GSF ID
+        hookAndroidId(lpparam);             // CAMADA 6 — Android ID
+        hookUptimeSpoof(lpparam);           // CAMADA 7 — Device Uptime
+        hookMagnesCollectAndSubmit(lpparam); // CAMADA 8 — Magnes SDK
+        hookUrlConnectionBlocking(lpparam); // CAMADA 9 — URL.openConnection
+        hookAdvertisingId(lpparam);         // CAMADA 10 — Advertising ID
     }
 
     /**
-     * CAMADA 1 — BLOQUEIO HTTP NUCLEAR via OkHttpClient.newCall()
-     * Intercepta TODAS as requisições HTTP e bloqueia as que vão para domínios de telemetria.
+     * CAMADA 1 — DNS SINKHOLE
+     * Intercepta InetAddress.getByName() e getAllByName() para resolver domínios
+     * bloqueados para 127.0.0.1. Isso é IMPOSSÍVEL de bypassar porque QUALQUER
+     * client HTTP (OkHttp, HttpURLConnection, etc.) precisa resolver DNS primeiro.
+     */
+    private void hookDnsSinkhole(LoadPackageParam lpparam) {
+        Set<String> allBlocked = new HashSet<>();
+        allBlocked.addAll(BLOCKED_DOMAINS);
+        allBlocked.addAll(TELEMETRY_DOMAINS);
+
+        // Hook InetAddress.getByName(String host)
+        try {
+            XposedHelpers.findAndHookMethod(
+                InetAddress.class,
+                "getByName",
+                String.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        String host = (String) param.args[0];
+                        if (host != null && isBlockedDomain(host, allBlocked)) {
+                            Log.e(TAG, "DNS SINKHOLE getByName: " + host + " → 127.0.0.1");
+                            param.setResult(InetAddress.getByAddress(host, new byte[]{127, 0, 0, 1}));
+                        }
+                    }
+                }
+            );
+            Log.e(TAG, "DNS sinkhole InetAddress.getByName() installed");
+        } catch (Throwable t) {
+            Log.e(TAG, "DNS getByName hook failed: " + t.getMessage());
+        }
+
+        // Hook InetAddress.getAllByName(String host)
+        try {
+            XposedHelpers.findAndHookMethod(
+                InetAddress.class,
+                "getAllByName",
+                String.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        String host = (String) param.args[0];
+                        if (host != null && isBlockedDomain(host, allBlocked)) {
+                            Log.e(TAG, "DNS SINKHOLE getAllByName: " + host + " → [127.0.0.1]");
+                            InetAddress loopback = InetAddress.getByAddress(host, new byte[]{127, 0, 0, 1});
+                            param.setResult(new InetAddress[]{loopback});
+                        }
+                    }
+                }
+            );
+            Log.e(TAG, "DNS sinkhole InetAddress.getAllByName() installed");
+        } catch (Throwable t) {
+            Log.e(TAG, "DNS getAllByName hook failed: " + t.getMessage());
+        }
+
+        Log.e(TAG, "DNS SINKHOLE: " + allBlocked.size() + " domains will resolve to 127.0.0.1");
+    }
+
+    /**
+     * CAMADA 2 — HTTP BLOCKING via OkHttpClient.newCall()
      */
     private void hookOkHttpBlocking(LoadPackageParam lpparam) {
-        int blocked = 0;
-
-        // Estratégia 1: Hook no OkHttpClient.newCall(Request)
         try {
             Class<?> okHttpClient = XposedHelpers.findClass("okhttp3.OkHttpClient", lpparam.classLoader);
-            Class<?> requestClass = XposedHelpers.findClass("okhttp3.Request", lpparam.classLoader);
 
             XposedBridge.hookAllMethods(okHttpClient, "newCall", new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                     if (param.args.length > 0 && param.args[0] != null) {
                         Object request = param.args[0];
-                        // Obter a URL do Request
                         Object urlObj = XposedHelpers.callMethod(request, "url");
                         String url = urlObj.toString();
-                        String host = "";
-                        try {
-                            host = (String) XposedHelpers.callMethod(urlObj, "host");
-                        } catch (Throwable t) {
-                            // Fallback: extrair host da URL string
-                            if (url.contains("://")) {
-                                host = url.split("://")[1].split("/")[0].split(":")[0];
-                            }
-                        }
+                        String host = extractHost(url, urlObj);
 
-                        if (isBlockedDomain(host)) {
-                            Log.e(TAG, "HTTP BLOCKED: " + url);
-                            // Criar uma Response fake de sucesso
-                            try {
-                                Class<?> responseClass = XposedHelpers.findClass("okhttp3.Response", lpparam.classLoader);
-                                Class<?> responseBuilderClass = XposedHelpers.findClass("okhttp3.Response$Builder", lpparam.classLoader);
-                                Class<?> protocolClass = XposedHelpers.findClass("okhttp3.Protocol", lpparam.classLoader);
-                                Class<?> responseBodyClass = XposedHelpers.findClass("okhttp3.ResponseBody", lpparam.classLoader);
-                                Class<?> mediaTypeClass = XposedHelpers.findClass("okhttp3.MediaType", lpparam.classLoader);
+                        Set<String> allBlocked = new HashSet<>();
+                        allBlocked.addAll(BLOCKED_DOMAINS);
+                        allBlocked.addAll(TELEMETRY_DOMAINS);
 
-                                Object protocol = XposedHelpers.getStaticObjectField(protocolClass, "HTTP_1_1");
-                                Object mediaType = XposedHelpers.callStaticMethod(mediaTypeClass, "parse", "application/json");
-                                Object body = XposedHelpers.callStaticMethod(responseBodyClass, "create", mediaType, "{\"status\":\"OK\"}");
-
-                                Object builder = responseBuilderClass.newInstance();
-                                XposedHelpers.callMethod(builder, "request", request);
-                                XposedHelpers.callMethod(builder, "protocol", protocol);
-                                XposedHelpers.callMethod(builder, "code", 200);
-                                XposedHelpers.callMethod(builder, "message", "OK");
-                                XposedHelpers.callMethod(builder, "body", body);
-
-                                Object fakeResponse = XposedHelpers.callMethod(builder, "build");
-
-                                // Criar um Call fake que retorna a response
-                                Object fakeCall = java.lang.reflect.Proxy.newProxyInstance(
-                                    lpparam.classLoader,
-                                    new Class[]{XposedHelpers.findClass("okhttp3.Call", lpparam.classLoader)},
-                                    (proxy, method, args) -> {
-                                        String mName = method.getName();
-                                        if ("execute".equals(mName)) return fakeResponse;
-                                        if ("enqueue".equals(mName)) {
-                                            // Chamar onResponse do callback
-                                            if (args != null && args.length > 0 && args[0] != null) {
-                                                try {
-                                                    Method onResponse = args[0].getClass().getMethod("onResponse",
-                                                        XposedHelpers.findClass("okhttp3.Call", lpparam.classLoader),
-                                                        responseClass);
-                                                    onResponse.invoke(args[0], proxy, fakeResponse);
-                                                } catch (Throwable t) {
-                                                    Log.e(TAG, "enqueue callback failed: " + t.getMessage());
-                                                }
-                                            }
-                                            return null;
-                                        }
-                                        if ("cancel".equals(mName)) return null;
-                                        if ("isExecuted".equals(mName)) return true;
-                                        if ("isCanceled".equals(mName)) return false;
-                                        if ("clone".equals(mName)) return proxy;
-                                        if ("request".equals(mName)) return request;
-                                        if ("timeout".equals(mName)) return XposedHelpers.newInstance(
-                                            XposedHelpers.findClass("okio.Timeout", lpparam.classLoader));
-                                        return null;
-                                    }
-                                );
-                                param.setResult(fakeCall);
-                            } catch (Throwable t) {
-                                Log.e(TAG, "Fake response creation failed, throwing IOException: " + t.getMessage());
-                                param.setThrowable(new java.io.IOException("Blocked by KMV Bypass: " + host));
-                            }
+                        if (isBlockedDomain(host, allBlocked)) {
+                            Log.e(TAG, "HTTP BLOCKED newCall: " + url);
+                            param.setThrowable(new java.io.IOException("Blocked by KMV Bypass: " + host));
                         }
                     }
                 }
             });
             Log.e(TAG, "OkHttpClient.newCall() HTTP blocking installed");
-            blocked++;
         } catch (Throwable t) {
             Log.e(TAG, "OkHttpClient.newCall hook failed: " + t.getMessage());
         }
 
-        // Estratégia 2: Hook no RealCall.execute() e RealCall.enqueue() como backup
-        try {
-            Class<?> realCall = XposedHelpers.findClass("okhttp3.internal.connection.RealCall", lpparam.classLoader);
-            hookRealCallMethod(realCall, "execute", lpparam);
-            hookRealCallMethod(realCall, "enqueue", lpparam);
-            blocked++;
-        } catch (Throwable t) {
-            // Tentar nome alternativo
+        // Backup: RealCall
+        String[] realCallClasses = {
+            "okhttp3.internal.connection.RealCall",
+            "okhttp3.RealCall"
+        };
+        for (String clsName : realCallClasses) {
             try {
-                Class<?> realCall = XposedHelpers.findClass("okhttp3.RealCall", lpparam.classLoader);
-                hookRealCallMethod(realCall, "execute", lpparam);
-                hookRealCallMethod(realCall, "enqueue", lpparam);
-                blocked++;
-            } catch (Throwable t2) {
-                Log.e(TAG, "RealCall hook failed: " + t2.getMessage());
+                Class<?> realCall = XposedHelpers.findClass(clsName, lpparam.classLoader);
+                for (String method : new String[]{"execute", "enqueue"}) {
+                    hookRealCallMethod(realCall, method, lpparam);
+                }
+                Log.e(TAG, "RealCall blocking installed via " + clsName);
+                break;
+            } catch (Throwable t) {
+                // Tentar próxima classe
             }
         }
-
-        Log.e(TAG, "HTTP blocking: " + blocked + " layers installed");
     }
 
     private void hookRealCallMethod(Class<?> realCallClass, String methodName, LoadPackageParam lpparam) {
         try {
+            Set<String> allBlocked = new HashSet<>();
+            allBlocked.addAll(BLOCKED_DOMAINS);
+            allBlocked.addAll(TELEMETRY_DOMAINS);
+
             XposedBridge.hookAllMethods(realCallClass, methodName, new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                     try {
                         Object request = XposedHelpers.callMethod(param.thisObject, "request");
                         Object urlObj = XposedHelpers.callMethod(request, "url");
-                        String host = "";
-                        try {
-                            host = (String) XposedHelpers.callMethod(urlObj, "host");
-                        } catch (Throwable t) {
-                            host = urlObj.toString().split("://")[1].split("/")[0].split(":")[0];
-                        }
-                        if (isBlockedDomain(host)) {
+                        String host = extractHost(urlObj.toString(), urlObj);
+                        if (isBlockedDomain(host, allBlocked)) {
                             Log.e(TAG, "RealCall." + methodName + " BLOCKED: " + host);
                             if ("execute".equals(methodName)) {
                                 param.setThrowable(new java.io.IOException("Blocked by KMV Bypass"));
                             } else {
-                                // enqueue — simplesmente não fazer nada
                                 param.setResult(null);
                             }
                         }
                     } catch (Throwable t) {
-                        // Silenciar para não quebrar requisições normais
+                        // Silenciar
                     }
                 }
             });
-            Log.e(TAG, "RealCall." + methodName + " blocking installed");
         } catch (Throwable t) {
-            Log.e(TAG, "RealCall." + methodName + " hook failed: " + t.getMessage());
+            // Silenciar
         }
     }
 
-    private static boolean isBlockedDomain(String host) {
-        if (host == null) return false;
-        host = host.toLowerCase();
-        for (String blocked : BLOCKED_DOMAINS) {
-            if (host.equals(blocked) || host.endsWith("." + blocked)) {
-                return true;
+    private String extractHost(String url, Object urlObj) {
+        try {
+            return (String) XposedHelpers.callMethod(urlObj, "host");
+        } catch (Throwable t) {
+            try {
+                if (url.contains("://")) {
+                    return url.split("://")[1].split("/")[0].split(":")[0];
+                }
+            } catch (Throwable t2) {
+                // Silenciar
             }
         }
-        return false;
+        return "";
     }
 
     /**
-     * CAMADA 2 — SharedPreferences Interception
-     * Intercepta TODAS as leituras/escritas de SharedPreferences do Magnes
-     * para rotacionar os IDs persistentes.
+     * CAMADA 3 — X-MOBILE HEADER UUID ROTATION
+     * O header x-mobile contém um UUID fixo que identifica o dispositivo.
+     * Formato: MARCA=POCO,...,UUID=<uuid><hash>,deviceFingerprintSessionId=<session>
+     * Interceptamos o Request.Builder para substituir o UUID.
+     */
+    private void hookXMobileHeader(LoadPackageParam lpparam) {
+        // Hook no OkHttp Request.Builder.addHeader() e header()
+        String[] methods = {"addHeader", "header"};
+        for (String methodName : methods) {
+            try {
+                Class<?> builderClass = XposedHelpers.findClass("okhttp3.Request$Builder", lpparam.classLoader);
+                XposedHelpers.findAndHookMethod(builderClass, methodName,
+                    String.class, String.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                            String name = (String) param.args[0];
+                            String value = (String) param.args[1];
+                            if (name != null && value != null && "x-mobile".equalsIgnoreCase(name)) {
+                                String newValue = rewriteXMobileHeader(value);
+                                if (!newValue.equals(value)) {
+                                    param.args[1] = newValue;
+                                    Log.e(TAG, "x-mobile header UUID ROTATED");
+                                }
+                            }
+                        }
+                    }
+                );
+                Log.e(TAG, "Request.Builder." + methodName + "() x-mobile hook installed");
+            } catch (Throwable t) {
+                Log.e(TAG, "Request.Builder." + methodName + " hook failed: " + t.getMessage());
+            }
+        }
+
+        // Também hook no HttpURLConnection.setRequestProperty
+        try {
+            XposedHelpers.findAndHookMethod(
+                java.net.HttpURLConnection.class,
+                "setRequestProperty",
+                String.class, String.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        String name = (String) param.args[0];
+                        String value = (String) param.args[1];
+                        if (name != null && value != null && "x-mobile".equalsIgnoreCase(name)) {
+                            param.args[1] = rewriteXMobileHeader(value);
+                        }
+                    }
+                }
+            );
+        } catch (Throwable t) {
+            // Silenciar
+        }
+    }
+
+    private String rewriteXMobileHeader(String value) {
+        // Formato: ...UUID=<uuid><hash>,...
+        // O UUID original é: 870949b0-2a4b-4a70-9f8d-9c80a1bb433a + 40684ca1383bd79201f005ce8b246e755e41b1e6
+        // Substituir por nosso UUID + hash
+        if (value.contains("UUID=")) {
+            // Extrair a parte antes e depois do UUID
+            int uuidStart = value.indexOf("UUID=") + 5;
+            int uuidEnd = value.indexOf(",", uuidStart);
+            if (uuidEnd == -1) uuidEnd = value.length();
+
+            String newUuid = SPOOFED_UUID.replace("-", "") + "-" +
+                SPOOFED_UUID.substring(0, 4) + "-" +
+                SPOOFED_UUID.substring(4, 8) + "-" +
+                SPOOFED_UUID.substring(8, 12) + "-" +
+                SPOOFED_UUID_HASH;
+
+            // Formato mais simples: UUID padrão + hash hex
+            newUuid = SPOOFED_UUID + SPOOFED_UUID_HASH;
+
+            value = value.substring(0, uuidStart) + newUuid + value.substring(uuidEnd);
+            Log.e(TAG, "x-mobile UUID rewritten to: " + newUuid.substring(0, 20) + "...");
+        }
+        return value;
+    }
+
+    /**
+     * CAMADA 4 — SharedPreferences Interception
      */
     private void hookSharedPreferences(LoadPackageParam lpparam) {
         try {
-            // Hook no Context.getSharedPreferences para interceptar os prefs do Magnes
             XposedHelpers.findAndHookMethod(
                 "android.app.ContextImpl", lpparam.classLoader,
                 "getSharedPreferences", String.class, int.class,
@@ -316,7 +387,6 @@ public class PersistentIdHooks {
                         if (name != null && isMagnesPref(name)) {
                             Object sp = param.getResult();
                             if (sp != null) {
-                                // Limpar as SharedPreferences do Magnes
                                 try {
                                     SharedPreferences.Editor editor = ((SharedPreferences) sp).edit();
                                     editor.clear();
@@ -335,7 +405,7 @@ public class PersistentIdHooks {
             Log.e(TAG, "SharedPreferences hook failed: " + t.getMessage());
         }
 
-        // Hook no getString para retornar valores spoofados
+        // Hook getString para retornar valores spoofados
         try {
             XposedBridge.hookAllMethods(
                 XposedHelpers.findClass("android.app.SharedPreferencesImpl", lpparam.classLoader),
@@ -347,10 +417,8 @@ public class PersistentIdHooks {
                             String key = ((String) param.args[0]).toLowerCase();
                             if (key.contains("app_guid") || key.contains("appguid")) {
                                 param.setResult(SPOOFED_APP_GUID);
-                                Log.e(TAG, "SP.getString('" + param.args[0] + "') -> " + SPOOFED_APP_GUID);
                             } else if (key.contains("magnes_guid") || key.contains("magnesguid")) {
                                 param.setResult(SPOOFED_MAGNES_GUID);
-                                Log.e(TAG, "SP.getString('" + param.args[0] + "') -> " + SPOOFED_MAGNES_GUID);
                             } else if (key.contains("device_id") || key.contains("deviceid") || key.contains("installation_id")) {
                                 param.setResult(UUID.randomUUID().toString());
                             }
@@ -358,7 +426,6 @@ public class PersistentIdHooks {
                     }
                 }
             );
-            Log.e(TAG, "SharedPreferences.getString spoofing installed");
         } catch (Throwable t) {
             Log.e(TAG, "SP getString hook failed: " + t.getMessage());
         }
@@ -370,14 +437,12 @@ public class PersistentIdHooks {
         for (String pref : MAGNES_PREF_NAMES) {
             if (lower.contains(pref.toLowerCase())) return true;
         }
-        // Também interceptar prefs com "magnes", "paypal", "rda" no nome
         return lower.contains("magnes") || lower.contains("paypal") || lower.contains("rda")
             || lower.contains("riskmanager") || lower.contains("viewpkg");
     }
 
     /**
-     * CAMADA 3 — GSF ID (Google Services Framework)
-     * O Magnes lê o gsf_id via ContentResolver query no GServices.
+     * CAMADA 5 — GSF ID (Google Services Framework)
      */
     private void hookGsfId(LoadPackageParam lpparam) {
         try {
@@ -397,12 +462,11 @@ public class PersistentIdHooks {
                     }
                 }
             );
-            Log.e(TAG, "Settings.Secure.getString(android_id) -> " + SPOOFED_ANDROID_ID);
         } catch (Throwable t) {
             Log.e(TAG, "Settings.Secure hook failed: " + t.getMessage());
         }
 
-        // Hook no ContentResolver.query para interceptar gsf_id
+        // Block ContentResolver.query for GSF
         try {
             XposedBridge.hookAllMethods(
                 ContentResolver.class,
@@ -420,17 +484,15 @@ public class PersistentIdHooks {
                     }
                 }
             );
-            Log.e(TAG, "ContentResolver.query GSF blocking installed");
         } catch (Throwable t) {
             Log.e(TAG, "ContentResolver.query hook failed: " + t.getMessage());
         }
     }
 
     /**
-     * CAMADA 4 — Android ID reforçado
+     * CAMADA 6 — Android ID reforçado
      */
     private void hookAndroidId(LoadPackageParam lpparam) {
-        // Já hookado no GSF, mas reforçar com Settings.Global também
         try {
             XposedHelpers.findAndHookMethod(
                 Settings.Global.class,
@@ -446,10 +508,9 @@ public class PersistentIdHooks {
                 }
             );
         } catch (Throwable t) {
-            // Settings.Global pode não ter android_id em todas as versões
+            // Silenciar
         }
 
-        // Hook Build.SERIAL
         try {
             String spoofedSerial = "POCO" + randomHex(12).toUpperCase();
             XposedHelpers.setStaticObjectField(Build.class, "SERIAL", spoofedSerial);
@@ -458,18 +519,16 @@ public class PersistentIdHooks {
             Log.e(TAG, "Build.SERIAL spoof failed: " + t.getMessage());
         }
 
-        // Hook Build.getSerial()
         try {
             XposedHelpers.findAndHookMethod(Build.class, "getSerial",
                 XC_MethodReplacement.returnConstant("POCO" + randomHex(12).toUpperCase()));
         } catch (Throwable t) {
-            // Pode não existir em API < 26
+            // Silenciar
         }
     }
 
     /**
-     * CAMADA 5 — Device Uptime Spoof
-     * O Magnes envia device_uptime que pode ser usado para correlação.
+     * CAMADA 7 — Device Uptime Spoof
      */
     private void hookUptimeSpoof(LoadPackageParam lpparam) {
         try {
@@ -491,11 +550,9 @@ public class PersistentIdHooks {
     }
 
     /**
-     * CAMADA 6 — Magnes collectAndSubmit / setUp interception
-     * Hook direto nos métodos de inicialização e coleta do Magnes SDK.
+     * CAMADA 8 — Magnes collectAndSubmit interception
      */
     private void hookMagnesCollectAndSubmit(LoadPackageParam lpparam) {
-        // Hook na classe MagnesSDK (d) — setUp e collectAndSubmit
         String[] magnesClasses = {
             "lib.android.paypal.com.magnessdk.d",
             "lib.android.paypal.com.magnessdk.MagnesSDK",
@@ -508,7 +565,6 @@ public class PersistentIdHooks {
                 int hooked = 0;
                 for (Method m : cls.getDeclaredMethods()) {
                     String name = m.getName();
-                    // Hook collectAndSubmit, collect, submit, setUp
                     if (name.equals("collectAndSubmit") || name.equals("collect")
                         || name.equals("submit") || name.equals("f")
                         || name.equals("g") || name.equals("h")) {
@@ -527,7 +583,6 @@ public class PersistentIdHooks {
                                 });
                             }
                             hooked++;
-                            Log.e(TAG, "Magnes " + clsName + "." + name + "() NEUTRALIZED");
                         } catch (Throwable t) {
                             // Silenciar
                         }
@@ -537,11 +592,11 @@ public class PersistentIdHooks {
                     Log.e(TAG, "Magnes class " + clsName + ": " + hooked + " methods neutralized");
                 }
             } catch (Throwable t) {
-                // Classe não encontrada, tentar próxima
+                // Classe não encontrada
             }
         }
 
-        // Hook AGRESSIVO: todos os métodos da classe C que retornam JSONObject
+        // Hook na classe C do Magnes — JSONObject methods
         try {
             Class<?> clsC = XposedHelpers.findClass("lib.android.paypal.com.magnessdk.C", lpparam.classLoader);
             int hookedCount = 0;
@@ -561,7 +616,6 @@ public class PersistentIdHooks {
                                     j.put("is_emulator", false);
                                     j.put("android_id", SPOOFED_ANDROID_ID);
                                     j.put("app_guid", SPOOFED_APP_GUID);
-                                    j.put("magnes_guid", SPOOFED_MAGNES_GUID);
                                     return j;
                                 } catch (Throwable t) {
                                     return new org.json.JSONObject();
@@ -587,9 +641,13 @@ public class PersistentIdHooks {
     }
 
     /**
-     * CAMADA 7 — HttpURLConnection blocking (fallback para requisições não-OkHttp)
+     * CAMADA 9 — URL.openConnection blocking
      */
     private void hookUrlConnectionBlocking(LoadPackageParam lpparam) {
+        Set<String> allBlocked = new HashSet<>();
+        allBlocked.addAll(BLOCKED_DOMAINS);
+        allBlocked.addAll(TELEMETRY_DOMAINS);
+
         try {
             XposedHelpers.findAndHookMethod(
                 java.net.URL.class,
@@ -599,19 +657,17 @@ public class PersistentIdHooks {
                     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                         java.net.URL url = (java.net.URL) param.thisObject;
                         String host = url.getHost();
-                        if (isBlockedDomain(host)) {
+                        if (isBlockedDomain(host, allBlocked)) {
                             Log.e(TAG, "URL.openConnection BLOCKED: " + url);
                             param.setThrowable(new java.io.IOException("Blocked by KMV Bypass: " + host));
                         }
                     }
                 }
             );
-            Log.e(TAG, "URL.openConnection blocking installed");
         } catch (Throwable t) {
             Log.e(TAG, "URL.openConnection hook failed: " + t.getMessage());
         }
 
-        // Também bloquear com Proxy
         try {
             XposedHelpers.findAndHookMethod(
                 java.net.URL.class,
@@ -622,8 +678,7 @@ public class PersistentIdHooks {
                     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                         java.net.URL url = (java.net.URL) param.thisObject;
                         String host = url.getHost();
-                        if (isBlockedDomain(host)) {
-                            Log.e(TAG, "URL.openConnection(Proxy) BLOCKED: " + url);
+                        if (isBlockedDomain(host, allBlocked)) {
                             param.setThrowable(new java.io.IOException("Blocked by KMV Bypass: " + host));
                         }
                     }
@@ -635,13 +690,11 @@ public class PersistentIdHooks {
     }
 
     /**
-     * CAMADA 8 — Advertising ID (GAID) spoof
-     * O Magnes pode ler o Google Advertising ID.
+     * CAMADA 10 — Advertising ID spoof
      */
     private void hookAdvertisingId(LoadPackageParam lpparam) {
         String fakeGaid = UUID.randomUUID().toString();
 
-        // AdvertisingIdClient.Info.getId()
         try {
             XposedHelpers.findAndHookMethod(
                 "com.google.android.gms.ads.identifier.AdvertisingIdClient$Info",
@@ -651,13 +704,10 @@ public class PersistentIdHooks {
             );
             Log.e(TAG, "AdvertisingIdClient.Info.getId() -> " + fakeGaid);
         } catch (Throwable t) {
-            // Classe pode não existir
+            // Silenciar
         }
 
-        // AdvertisingIdClient.getAdvertisingIdInfo() — retornar Info com ID fake
         try {
-            Class<?> infoClass = XposedHelpers.findClass(
-                "com.google.android.gms.ads.identifier.AdvertisingIdClient$Info", lpparam.classLoader);
             XposedHelpers.findAndHookMethod(
                 "com.google.android.gms.ads.identifier.AdvertisingIdClient",
                 lpparam.classLoader,
@@ -666,14 +716,23 @@ public class PersistentIdHooks {
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        // O resultado já terá o getId() hookado acima
+                        // getId() já está hookado acima
                     }
                 }
             );
         } catch (Throwable t) {
             // Silenciar
         }
+    }
 
-        Log.e(TAG, "Advertising ID hooks installed");
+    private static boolean isBlockedDomain(String host, Set<String> blockedSet) {
+        if (host == null) return false;
+        host = host.toLowerCase();
+        for (String blocked : blockedSet) {
+            if (host.equals(blocked) || host.endsWith("." + blocked)) {
+                return true;
+            }
+        }
+        return false;
     }
 }
