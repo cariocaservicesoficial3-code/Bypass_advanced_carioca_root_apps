@@ -206,3 +206,41 @@ XposedHelpers.findAndHookMethod("br.com.allowme.android.allowmesdk.AllowMe", lpp
 XposedHelpers.findAndHookMethod("com.incognia.Incognia", lpparam.classLoader, "trackEvent", String.class, XC_MethodReplacement.returnConstant(null));
 XposedHelpers.findAndHookMethod("com.incognia.Incognia", lpparam.classLoader, "getInstallationId", XC_MethodReplacement.returnConstant("00000000-0000-0000-0000-000000000000"));
 ```
+
+## PayPal Magnes SDK (RDA)
+**Natureza**: Risk Data Aggregator (RDA) da PayPal, embutido como dependência ou sub-módulo em SDKs de pagamento (ex: Braintree).
+**Ação**: Coleta fingerprint extremo do dispositivo, incluindo `android_id`, IPs de todas as interfaces de rede (incluindo VPNs `tun0`), tempo de uptime, status de root/emulador e envia para `c.paypal.com/r/v1/device/client-metadata`. O backend recebe um `clientMetadataId` e cruza os dados de risco.
+**Bypass**: A ofuscação de classes (A, B, C, a, b, c) muda por versão, mas a assinatura da classe de retorno é sempre a mesma. No KMV (v4.83.101), o hook foi feito na classe que gera o JSON final (`lib.android.paypal.com.magnessdk.c`) para retornar valores mockados, e no coletor (`lib.android.paypal.com.magnessdk.d`) para não quebrar o fluxo.
+```java
+// Retornar um pairing_id fixo (neutro)
+XposedHelpers.findAndHookMethod("lib.android.paypal.com.magnessdk.c", lpparam.classLoader, "b", XC_MethodReplacement.returnConstant("00000000000000000000000000000000"));
+// Retornar JSON vazio no payloadJson
+XposedHelpers.findAndHookMethod("lib.android.paypal.com.magnessdk.c", lpparam.classLoader, "a", new XC_MethodReplacement() {
+    @Override protected Object replaceHookedMethod(MethodHookParam param) { return new org.json.JSONObject(); }
+});
+```
+
+## ViewPkg / AppView SDK
+**Natureza**: Motor de inteligência de pacotes (Package Intelligence).
+**Ação**: Coleta ativamente a lista de todos os pacotes (apps) instalados no dispositivo através de `PackageManager` e envia criptografado para `d.viewpkg.com/android/v1`. Se o dispositivo tiver ferramentas como Magisk Manager, LSPosed Manager ou apps de hacking, o score de risco é elevado.
+**Bypass**: Neutralizar o método de envio (no KMV: `Ba.b.c()`) ou, de forma mais robusta, criar um filtro global no `PackageManager` para esconder pacotes suspeitos.
+```java
+// Filtro global em PackageManager.getInstalledPackages
+XposedBridge.hookAllMethods(PackageManager.class, "getInstalledPackages", new XC_MethodHook() {
+    @Override
+    protected void afterHookedMethod(MethodHookParam param) {
+        List<PackageInfo> filtered = new ArrayList<>();
+        for (Object o : (List<?>) param.getResult()) {
+            PackageInfo pi = (PackageInfo) o;
+            if (!SUSPICIOUS_PACKAGES.contains(pi.packageName)) {
+                filtered.add(pi);
+            }
+        }
+        param.setResult(filtered);
+    }
+});
+```
+```
+// Bloquear o envio direto para o d.viewpkg.com
+XposedHelpers.findAndHookMethod("Ba.b", lpparam.classLoader, "c", String.class, String.class, String.class, XC_MethodReplacement.returnConstant(null));
+```
