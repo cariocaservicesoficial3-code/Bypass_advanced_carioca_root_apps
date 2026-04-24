@@ -179,3 +179,30 @@ O CashShield delega todas as suas verificações C++ para a ponte Java através 
 - Hookar ~26 métodos booleanos (`isFoundMagisk`, `isFridaDetected`, `isAccessedSuperuserApk`, etc.) para retornar `false`
 - Hookar métodos int (`getArpCache`, `isPathExists`, `jitCacheCount`) para retornar `0`
 - Hookar métodos string (`getHostsModifiedTime`, `getBaseApkPath`, `getNativeAppVersion`, `getNativePackage`) para retornar valores stock/seguros
+
+## AllowMe SDK / Serasa IDF
+**Natureza**: SDK de biometria comportamental e anti-fraude server-side da Serasa Experian.
+**Ação**: Coleta dados profundos do dispositivo (fingerprint de hardware, apps instalados, configurações) e envia via requisições criptografadas (ECDH) para a API `idf-api.serasaexperian.com.br`. Retorna um token (`sessionId` ou `collectToken`) que o app repassa ao seu próprio backend.
+**Bypass (Ouro)**:
+O segredo não é impedir a coleta, mas sim interceptar a resposta do SDK e injetar um token limpo antes que o app envie para o backend. O backend não consegue validar matematicamente o token sem consultar o Serasa, e frequentemente aceita qualquer string bem formada ou ignora se o Serasa retornar timeout.
+```java
+// Hook na classe br.com.allowme.android.allowmesdk.AllowMe
+XposedHelpers.findAndHookMethod("br.com.allowme.android.allowmesdk.AllowMe", lpparam.classLoader, "collect", "br.com.allowme.android.allowmesdk.CollectCallback", new XC_MethodReplacement() {
+    @Override
+    protected Object replaceHookedMethod(MethodHookParam param) throws Throwable {
+        Object callback = param.args[0];
+        Method m = callback.getClass().getMethod("onSuccess", String.class);
+        m.invoke(callback, "clean-device-fingerprint-token"); // O backend aceitará esse token
+        return null;
+    }
+});
+```
+
+## Incognia SDK
+**Natureza**: SDK de localização e biometria comportamental (trackEvent).
+**Ação**: Monitora ações do usuário (cadastro, login) cruzando com sensores e redes Wi-Fi.
+**Bypass**: Neutralizar os métodos estáticos `trackEvent` e falsificar o `getInstallationId`.
+```java
+XposedHelpers.findAndHookMethod("com.incognia.Incognia", lpparam.classLoader, "trackEvent", String.class, XC_MethodReplacement.returnConstant(null));
+XposedHelpers.findAndHookMethod("com.incognia.Incognia", lpparam.classLoader, "getInstallationId", XC_MethodReplacement.returnConstant("00000000-0000-0000-0000-000000000000"));
+```
