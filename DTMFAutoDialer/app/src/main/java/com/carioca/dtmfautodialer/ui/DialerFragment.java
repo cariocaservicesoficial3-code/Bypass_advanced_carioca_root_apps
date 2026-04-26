@@ -105,6 +105,12 @@ public class DialerFragment extends Fragment {
         // Botão: Ligar
         view.findViewById(R.id.btn_call).setOnClickListener(v -> makeCall());
 
+        // Botão: CALCARD CONSULTA (08006484455)
+        view.findViewById(R.id.btn_calcard_consulta).setOnClickListener(v -> {
+            editPhoneNumber.setText("08006484455");
+            makeCall();
+        });
+
         // Botão: Colar sequência DTMF pré-configurada
         view.findViewById(R.id.btn_paste_dtmf_pre).setOnClickListener(v -> {
             ClipboardManager cb = (ClipboardManager) requireContext().getSystemService(android.content.Context.CLIPBOARD_SERVICE);

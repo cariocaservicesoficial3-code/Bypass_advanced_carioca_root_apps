@@ -80,6 +80,17 @@
                 android:layout_marginTop="10dp"
                 android:layout_marginBottom="10dp" />
 
+            <Button
+                android:id="@+id/btn_calcard_consulta"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginBottom="12dp"
+                android:background="@drawable/button_call"
+                android:text="💳  CALCARD CONSULTA"
+                android:textColor="@color/text_primary"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
