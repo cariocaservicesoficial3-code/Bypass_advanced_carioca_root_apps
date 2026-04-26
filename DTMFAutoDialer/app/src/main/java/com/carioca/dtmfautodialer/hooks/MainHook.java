@@ -1,6 +1,5 @@
 package com.carioca.dtmfautodialer.hooks;
 
-import android.os.Environment;
 import android.os.FileObserver;
 import android.os.Handler;
 import android.os.Looper;
@@ -19,35 +18,27 @@ import java.io.FileReader;
 import java.io.FileWriter;
 
 /**
- * MainHook - Hook principal do módulo LSPosed DTMF Auto Dialer v1.2
+ * MainHook - Hook principal do módulo LSPosed DTMF Auto Dialer v1.3
  *
  * ARQUITETURA DE COMUNICAÇÃO:
- * - O widget flutuante (FloatingWidgetService) escreve um arquivo de comando
- *   em /sdcard/Android/data/.dtmf_command com os dígitos e delay
- * - O hook (este arquivo) monitora esse arquivo com FileObserver
- * - Quando o arquivo é modificado, o hook lê os dígitos e envia DTMF
- * - O hook escreve progresso/status em /sdcard/Android/data/.dtmf_status
- * - O widget lê o status via polling
+ * Usa /data/local/tmp/dtmf_autodialer/ como diretório compartilhado.
+ * Este caminho é acessível por qualquer processo em dispositivos com root,
+ * sem precisar de permissões de storage do Android 11+.
  *
- * Isso resolve o problema de broadcasts implícitos bloqueados no Android 11+
+ * - Widget escreve: command.txt (formato: SEND|dígitos|delay ou STOP)
+ * - Hook monitora: command.txt via FileObserver + polling fallback
+ * - Hook escreve: status.txt (PROGRESS, COMPLETE, ERROR, etc.)
+ * - Widget lê: status.txt via polling
  */
 public class MainHook implements IXposedHookLoadPackage {
 
     private static final String TAG = "DTMFAutoDialer";
     private static final String SELF_PACKAGE = "com.carioca.dtmfautodialer";
 
-    // Arquivos de comunicação cross-process
-    public static final String COMMAND_DIR = "/sdcard/Android/data/.dtmf_autodialer";
+    // Diretório de comunicação - /data/local/tmp é world-readable/writable com root
+    public static final String COMMAND_DIR = "/data/local/tmp/dtmf_autodialer";
     public static final String COMMAND_FILE = COMMAND_DIR + "/command.txt";
     public static final String STATUS_FILE = COMMAND_DIR + "/status.txt";
-
-    // Constantes para ações do broadcast (mantidas para compatibilidade interna)
-    public static final String ACTION_SEND_DTMF_SEQUENCE = "com.carioca.dtmfautodialer.SEND_DTMF_SEQUENCE";
-    public static final String ACTION_STOP_DTMF = "com.carioca.dtmfautodialer.STOP_DTMF";
-    public static final String ACTION_CALL_STATE_CHANGED = "com.carioca.dtmfautodialer.CALL_STATE_CHANGED";
-    public static final String EXTRA_DIGITS = "digits";
-    public static final String EXTRA_DELAY_MS = "delay_ms";
-    public static final String EXTRA_CALL_ACTIVE = "call_active";
 
     // Referência estática para a chamada ativa
     private static Call sActiveCall = null;
@@ -57,6 +48,7 @@ public class MainHook implements IXposedHookLoadPackage {
     // FileObserver para monitorar comandos
     private static FileObserver sFileObserver = null;
     private static boolean sObserverStarted = false;
+    private static boolean sPollingStarted = false;
 
     // Lista de pacotes de apps de telefone conhecidos
     private static final String[] DIALER_PACKAGES = {
@@ -107,8 +99,9 @@ public class MainHook implements IXposedHookLoadPackage {
         // Criar diretório de comunicação
         ensureCommandDir();
 
-        // Iniciar FileObserver para monitorar comandos do widget
+        // Iniciar monitoramento
         startFileObserver();
+        startPolling();
 
         // ============================================================
         // HOOK 1: InCallService.onCallAdded(Call)
@@ -126,7 +119,6 @@ public class MainHook implements IXposedHookLoadPackage {
                             sActiveCall = call;
                             XposedBridge.log(TAG + ": Call added! State: " + call.getState());
 
-                            // Registrar callback para monitorar estado da chamada
                             call.registerCallback(new Call.Callback() {
                                 @Override
                                 public void onStateChanged(Call call, int state) {
@@ -143,10 +135,10 @@ public class MainHook implements IXposedHookLoadPackage {
                                 }
                             });
 
-                            // Garantir que o FileObserver está rodando
+                            // Garantir monitoramento ativo
+                            ensureCommandDir();
                             startFileObserver();
 
-                            // Notificar estado
                             if (call.getState() == Call.STATE_ACTIVE) {
                                 writeStatus("CALL_ACTIVE");
                             } else {
@@ -191,93 +183,83 @@ public class MainHook implements IXposedHookLoadPackage {
     // COMUNICAÇÃO VIA ARQUIVO
     // ============================================================
 
-    /**
-     * Garante que o diretório de comunicação existe
-     */
     private static void ensureCommandDir() {
         try {
             File dir = new File(COMMAND_DIR);
             if (!dir.exists()) {
-                dir.mkdirs();
+                boolean created = dir.mkdirs();
+                XposedBridge.log(TAG + ": mkdir " + COMMAND_DIR + " = " + created);
+                if (created) {
+                    // Tornar acessível por todos
+                    Runtime.getRuntime().exec("chmod 777 " + COMMAND_DIR);
+                }
             }
-            // Criar arquivos se não existem
             File cmd = new File(COMMAND_FILE);
             if (!cmd.exists()) {
                 cmd.createNewFile();
+                Runtime.getRuntime().exec("chmod 666 " + COMMAND_FILE);
             }
             File status = new File(STATUS_FILE);
             if (!status.exists()) {
                 status.createNewFile();
+                Runtime.getRuntime().exec("chmod 666 " + STATUS_FILE);
             }
-            XposedBridge.log(TAG + ": Command directory ready: " + COMMAND_DIR);
         } catch (Exception e) {
             XposedBridge.log(TAG + ": Error creating command dir: " + e.getMessage());
         }
     }
 
-    /**
-     * Inicia o FileObserver para monitorar o arquivo de comando
-     */
     private static void startFileObserver() {
         if (sObserverStarted) return;
 
         try {
             ensureCommandDir();
 
-            // FileObserver monitora o diretório inteiro
             sFileObserver = new FileObserver(COMMAND_DIR, FileObserver.CLOSE_WRITE | FileObserver.MODIFY) {
                 @Override
                 public void onEvent(int event, String path) {
                     if (path != null && path.equals("command.txt")) {
-                        XposedBridge.log(TAG + ": Command file changed! Reading...");
+                        XposedBridge.log(TAG + ": FileObserver: command.txt changed!");
                         sHandler.post(() -> processCommand());
                     }
                 }
             };
             sFileObserver.startWatching();
             sObserverStarted = true;
-            XposedBridge.log(TAG + ": FileObserver started watching " + COMMAND_DIR);
+            XposedBridge.log(TAG + ": FileObserver started on " + COMMAND_DIR);
         } catch (Exception e) {
-            XposedBridge.log(TAG + ": Error starting FileObserver: " + e.getMessage());
-
-            // Fallback: usar polling a cada 500ms
-            XposedBridge.log(TAG + ": Starting polling fallback...");
-            startPolling();
+            XposedBridge.log(TAG + ": FileObserver error: " + e.getMessage());
         }
     }
 
-    /**
-     * Fallback: polling do arquivo de comando a cada 500ms
-     */
     private static long sLastCommandModified = 0;
 
     private static void startPolling() {
+        if (sPollingStarted) return;
+        sPollingStarted = true;
+
+        XposedBridge.log(TAG + ": Starting command polling...");
+
         sHandler.postDelayed(new Runnable() {
             @Override
             public void run() {
                 try {
                     File cmdFile = new File(COMMAND_FILE);
-                    if (cmdFile.exists() && cmdFile.lastModified() > sLastCommandModified) {
+                    if (cmdFile.exists() && cmdFile.length() > 0 && cmdFile.lastModified() > sLastCommandModified) {
                         sLastCommandModified = cmdFile.lastModified();
+                        XposedBridge.log(TAG + ": Polling: command.txt changed!");
                         processCommand();
                     }
                 } catch (Exception e) {
                     // Ignorar
                 }
-                // Continuar polling enquanto houver chamada ativa
-                if (sActiveCall != null) {
-                    sHandler.postDelayed(this, 500);
-                } else {
-                    sHandler.postDelayed(this, 2000);
-                }
+                // Polling rápido durante chamada, lento fora
+                int interval = (sActiveCall != null) ? 300 : 2000;
+                sHandler.postDelayed(this, interval);
             }
-        }, 500);
+        }, 300);
     }
 
-    /**
-     * Processa o comando lido do arquivo
-     * Formato: SEND|dígitos|delay_ms  ou  STOP
-     */
     private static void processCommand() {
         try {
             File cmdFile = new File(COMMAND_FILE);
@@ -287,9 +269,12 @@ public class MainHook implements IXposedHookLoadPackage {
             String line = reader.readLine();
             reader.close();
 
-            if (line == null || line.isEmpty()) return;
+            if (line == null || line.trim().isEmpty()) return;
 
             XposedBridge.log(TAG + ": Processing command: " + line);
+
+            // Limpar imediatamente para não reprocessar
+            clearCommandFile();
 
             String[] parts = line.split("\\|");
             String action = parts[0].trim();
@@ -297,14 +282,8 @@ public class MainHook implements IXposedHookLoadPackage {
             if ("SEND".equals(action) && parts.length >= 3) {
                 String digits = parts[1].trim();
                 int delayMs = Integer.parseInt(parts[2].trim());
-
-                // Limpar o arquivo de comando para não reprocessar
-                clearCommandFile();
-
                 sendDtmfSequence(digits, delayMs);
-
             } else if ("STOP".equals(action)) {
-                clearCommandFile();
                 stopDtmfSequence();
             }
 
@@ -313,9 +292,6 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
-    /**
-     * Limpa o arquivo de comando
-     */
     private static void clearCommandFile() {
         try {
             FileWriter writer = new FileWriter(COMMAND_FILE, false);
@@ -326,23 +302,14 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
-    /**
-     * Escreve status no arquivo de status para o widget ler
-     * Formatos:
-     *   CALL_ACTIVE
-     *   CALL_ENDED
-     *   CALL_RINGING
-     *   PROGRESS|current|total|digit
-     *   COMPLETE
-     *   ERROR|mensagem
-     */
     private static void writeStatus(String status) {
         try {
             ensureCommandDir();
             FileWriter writer = new FileWriter(STATUS_FILE, false);
             writer.write(status + "\n" + System.currentTimeMillis());
+            writer.flush();
             writer.close();
-            XposedBridge.log(TAG + ": Status written: " + status);
+            XposedBridge.log(TAG + ": Status: " + status);
         } catch (Exception e) {
             XposedBridge.log(TAG + ": Error writing status: " + e.getMessage());
         }
@@ -352,78 +319,64 @@ public class MainHook implements IXposedHookLoadPackage {
     // DTMF PLAYBACK
     // ============================================================
 
-    /**
-     * Envia uma sequência de dígitos DTMF
-     */
     private static void sendDtmfSequence(String digits, int delayMs) {
         if (sActiveCall == null) {
-            XposedBridge.log(TAG + ": No active call to send DTMF!");
+            XposedBridge.log(TAG + ": ERROR - No active call!");
             writeStatus("ERROR|Nenhuma chamada ativa");
             return;
         }
 
         if (sIsPlaying) {
-            XposedBridge.log(TAG + ": Already playing, stopping first...");
             stopDtmfSequence();
+            // Pequeno delay antes de iniciar nova sequência
+            sHandler.postDelayed(() -> doSendDtmf(digits, delayMs), 200);
+        } else {
+            doSendDtmf(digits, delayMs);
         }
+    }
 
-        // Extrair apenas dígitos DTMF válidos
+    private static void doSendDtmf(String digits, int delayMs) {
         String cleanDigits = digits.replaceAll("[^0-9*#]", "");
         if (cleanDigits.isEmpty()) {
-            XposedBridge.log(TAG + ": No valid DTMF digits in: " + digits);
             writeStatus("ERROR|Nenhum dígito válido");
             return;
         }
 
-        XposedBridge.log(TAG + ": === STARTING DTMF SEQUENCE ===");
-        XposedBridge.log(TAG + ": Digits: " + cleanDigits + " | Delay: " + delayMs + "ms");
+        XposedBridge.log(TAG + ": === STARTING DTMF: " + cleanDigits + " delay=" + delayMs + "ms ===");
 
         sIsPlaying = true;
         final char[] digitArray = cleanDigits.toCharArray();
 
         writeStatus("PLAYING|0|" + digitArray.length);
 
-        // Enviar cada dígito com delay
         for (int i = 0; i < digitArray.length; i++) {
             final int index = i;
             final char digit = digitArray[i];
 
             sHandler.postDelayed(() -> {
-                if (!sIsPlaying || sActiveCall == null) {
-                    XposedBridge.log(TAG + ": Sequence interrupted at index " + index);
-                    return;
-                }
+                if (!sIsPlaying || sActiveCall == null) return;
 
                 try {
-                    XposedBridge.log(TAG + ": DTMF tone: " + digit +
-                            " (" + (index + 1) + "/" + digitArray.length + ")");
+                    XposedBridge.log(TAG + ": DTMF [" + digit + "] " + (index + 1) + "/" + digitArray.length);
 
-                    // Tocar o tom DTMF
                     sActiveCall.playDtmfTone(digit);
 
-                    // Parar o tom após 150ms
                     sHandler.postDelayed(() -> {
                         try {
-                            if (sActiveCall != null) {
-                                sActiveCall.stopDtmfTone();
-                            }
-                        } catch (Exception e) {
-                            XposedBridge.log(TAG + ": Error stopping tone: " + e.getMessage());
-                        }
+                            if (sActiveCall != null) sActiveCall.stopDtmfTone();
+                        } catch (Exception e) { }
 
-                        // Escrever progresso
                         writeStatus("PROGRESS|" + (index + 1) + "|" + digitArray.length + "|" + digit);
 
-                        // Último dígito?
                         if (index == digitArray.length - 1) {
                             sIsPlaying = false;
                             writeStatus("COMPLETE");
-                            XposedBridge.log(TAG + ": === DTMF SEQUENCE COMPLETE ===");
+                            XposedBridge.log(TAG + ": === DTMF COMPLETE ===");
                         }
                     }, 150);
 
                 } catch (Exception e) {
-                    XposedBridge.log(TAG + ": Error playing DTMF: " + e.getMessage());
+                    XposedBridge.log(TAG + ": DTMF error: " + e.getMessage());
                     writeStatus("ERROR|" + e.getMessage());
                     sIsPlaying = false;
                 }
@@ -431,23 +384,17 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
-    /**
-     * Para a sequência DTMF
-     */
     private static void stopDtmfSequence() {
         sIsPlaying = false;
         sHandler.removeCallbacksAndMessages(null);
         if (sActiveCall != null) {
-            try {
-                sActiveCall.stopDtmfTone();
-            } catch (Exception e) {
-                XposedBridge.log(TAG + ": Error stopping DTMF: " + e.getMessage());
-            }
+            try { sActiveCall.stopDtmfTone(); } catch (Exception e) { }
         }
         writeStatus("STOPPED");
-        XposedBridge.log(TAG + ": DTMF sequence stopped");
+        XposedBridge.log(TAG + ": DTMF stopped");
 
-        // Reiniciar polling se necessário
+        // Reiniciar polling
+        sPollingStarted = false;
         startPolling();
     }
 }

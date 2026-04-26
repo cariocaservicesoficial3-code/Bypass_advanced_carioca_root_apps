@@ -130,11 +130,37 @@ public class FloatingWidgetService extends Service {
     private void ensureCommandDir() {
         try {
             File dir = new File(MainHook.COMMAND_DIR);
-            if (!dir.exists()) dir.mkdirs();
+            if (!dir.exists()) {
+                // Tentar criar via shell com su para garantir permissões
+                try {
+                    Process p = Runtime.getRuntime().exec(new String[]{"su", "-c",
+                            "mkdir -p " + MainHook.COMMAND_DIR + " && chmod 777 " + MainHook.COMMAND_DIR});
+                    p.waitFor();
+                } catch (Exception e) {
+                    // Fallback: criar normalmente
+                    dir.mkdirs();
+                }
+            }
             File cmd = new File(MainHook.COMMAND_FILE);
-            if (!cmd.exists()) cmd.createNewFile();
+            if (!cmd.exists()) {
+                try {
+                    Process p = Runtime.getRuntime().exec(new String[]{"su", "-c",
+                            "touch " + MainHook.COMMAND_FILE + " && chmod 666 " + MainHook.COMMAND_FILE});
+                    p.waitFor();
+                } catch (Exception e) {
+                    cmd.createNewFile();
+                }
+            }
             File status = new File(MainHook.STATUS_FILE);
-            if (!status.exists()) status.createNewFile();
+            if (!status.exists()) {
+                try {
+                    Process p = Runtime.getRuntime().exec(new String[]{"su", "-c",
+                            "touch " + MainHook.STATUS_FILE + " && chmod 666 " + MainHook.STATUS_FILE});
+                    p.waitFor();
+                } catch (Exception e) {
+                    status.createNewFile();
+                }
+            }
         } catch (Exception e) {
             // Ignorar
         }
@@ -145,14 +171,25 @@ public class FloatingWidgetService extends Service {
      * Formato: SEND|dígitos|delay_ms  ou  STOP
      */
     private void writeCommand(String command) {
+        ensureCommandDir();
+        // Tentar escrita direta primeiro
         try {
-            ensureCommandDir();
             FileWriter writer = new FileWriter(MainHook.COMMAND_FILE, false);
             writer.write(command);
             writer.flush();
             writer.close();
+            return; // Sucesso!
         } catch (Exception e) {
-            Toast.makeText(this, "Erro ao enviar comando: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            // Escrita direta falhou, tentar via su
+        }
+        // Fallback: escrever via su (root)
+        try {
+            String escaped = command.replace("\"", "\\\"");
+            Process p = Runtime.getRuntime().exec(new String[]{"su", "-c",
+                    "echo '" + escaped + "' > " + MainHook.COMMAND_FILE + " && chmod 666 " + MainHook.COMMAND_FILE});
+            p.waitFor();
+        } catch (Exception e2) {
+            Toast.makeText(this, "Erro ao enviar comando: " + e2.getMessage(), Toast.LENGTH_LONG).show();
         }
     }
 
