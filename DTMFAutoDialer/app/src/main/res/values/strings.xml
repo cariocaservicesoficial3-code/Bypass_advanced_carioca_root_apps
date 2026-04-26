@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DTMF Auto Dialer</string>
+    <string name="module_description">Auto-digita sequência de números DTMF durante ligações. Cole CPF, telefone ou qualquer sequência numérica e o módulo digita automaticamente no teclado do telefone.</string>
+</resources>

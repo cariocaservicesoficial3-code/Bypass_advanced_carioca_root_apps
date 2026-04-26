@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Escopo do módulo LSPosed - apps de telefone alvo -->
+    <string-array name="xposed_scope">
+        <item>com.google.android.dialer</item>
+        <item>com.android.dialer</item>
+        <item>com.samsung.android.dialer</item>
+        <item>com.android.incallui</item>
+        <item>com.android.server.telecom</item>
+    </string-array>
+</resources>
