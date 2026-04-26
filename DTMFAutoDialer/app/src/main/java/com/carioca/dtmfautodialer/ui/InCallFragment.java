@@ -44,6 +44,8 @@ public class InCallFragment extends Fragment {
     private Button btnStartDtmf;
     private Button btnStopDtmf;
     private Button btnHangup;
+    private Button btnSpeaker;
+    private boolean isSpeakerOn = false;
     private TextView tvDelayIncallLabel;
     private SeekBar seekDelayIncall;
 
@@ -119,6 +121,7 @@ public class InCallFragment extends Fragment {
         btnStartDtmf = view.findViewById(R.id.btn_start_dtmf);
         btnStopDtmf = view.findViewById(R.id.btn_stop_dtmf);
         btnHangup = view.findViewById(R.id.btn_hangup);
+        btnSpeaker = view.findViewById(R.id.btn_speaker);
         tvDelayIncallLabel = view.findViewById(R.id.tv_delay_incall_label);
         seekDelayIncall = view.findViewById(R.id.seek_delay_incall);
 
@@ -166,6 +169,9 @@ public class InCallFragment extends Fragment {
             }
         });
 
+        // Botão: Viva-Voz
+        btnSpeaker.setOnClickListener(v -> toggleSpeaker());
+
         // Iniciar atualizador de estado da chamada
         startCallStateUpdater();
         updateCallInfo();
@@ -184,8 +190,39 @@ public class InCallFragment extends Fragment {
         handler.post(callStateUpdater);
     }
 
+    private void toggleSpeaker() {
+        isSpeakerOn = !isSpeakerOn;
+        if (CariocaInCallService.instance != null) {
+            CariocaInCallService.instance.setSpeaker(isSpeakerOn);
+            updateSpeakerButtonUI();
+        } else {
+            Toast.makeText(requireContext(), "Serviço de chamada não disponível", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void updateSpeakerButtonUI() {
+        if (btnSpeaker != null) {
+            if (isSpeakerOn) {
+                btnSpeaker.setText("🔊 VIVA-VOZ: ON");
+                btnSpeaker.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF10B981)); // success green
+            } else {
+                btnSpeaker.setText("🔈 VIVA-VOZ: OFF");
+                btnSpeaker.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF4B5563)); // gray
+            }
+        }
+    }
+
     private void updateCallInfo() {
         if (tvIncallNumber == null || tvCallState == null) return;
+        
+        // Sincronizar estado do viva-voz se o serviço estiver ativo
+        if (CariocaInCallService.instance != null && CariocaInCallService.instance.getCallAudioState() != null) {
+            boolean actualSpeakerState = CariocaInCallService.instance.getCallAudioState().getRoute() == android.telecom.CallAudioState.ROUTE_SPEAKER;
+            if (isSpeakerOn != actualSpeakerState) {
+                isSpeakerOn = actualSpeakerState;
+                updateSpeakerButtonUI();
+            }
+        }
 
         Call call = CariocaInCallService.currentCall;
         if (call != null) {

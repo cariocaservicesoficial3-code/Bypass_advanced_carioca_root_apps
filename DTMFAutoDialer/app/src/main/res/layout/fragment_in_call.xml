@@ -224,6 +224,18 @@
             android:visibility="gone"
             android:layout_marginBottom="12dp" />
 
+        <!-- Botão VIVA-VOZ -->
+        <Button
+            android:id="@+id/btn_speaker"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:background="@drawable/button_secondary"
+            android:text="🔈 VIVA-VOZ: OFF"
+            android:textColor="@color/text_primary"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="12dp" />
+
         <!-- Botão DESLIGAR -->
         <Button
             android:id="@+id/btn_hangup"
