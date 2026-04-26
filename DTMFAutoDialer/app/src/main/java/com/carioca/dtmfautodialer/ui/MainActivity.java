@@ -111,10 +111,17 @@ public class MainActivity extends AppCompatActivity {
 
     private void checkIfDefaultDialer() {
         TelecomManager telecomManager = (TelecomManager) getSystemService(TELECOM_SERVICE);
-        if (telecomManager != null && telecomManager.getDefaultDialerPackage().equals(getPackageName())) {
-            tvModuleStatus.setText("✓ DISCADOR PADRÃO");
-            tvModuleStatus.setTextColor(0xFF10B981); // verde
-        } else {
+        if (telecomManager != null) {
+            String defaultDialer = telecomManager.getDefaultDialerPackage();
+            if (defaultDialer != null && defaultDialer.equals(getPackageName())) {
+                tvModuleStatus.setText("✓ DISCADOR PADRÃO");
+                tvModuleStatus.setTextColor(0xFF10B981); // verde
+                return;
+            }
+        }
+        
+        // Se cair aqui, não é o discador padrão ou telecomManager falhou
+        if (tvModuleStatus != null) {
             tvModuleStatus.setText("✗ NÃO É PADRÃO");
             tvModuleStatus.setTextColor(0xFFEF4444); // vermelho
         }
