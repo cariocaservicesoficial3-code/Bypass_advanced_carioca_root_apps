@@ -21,23 +21,24 @@
         android:requestLegacyExternalStorage="true"
         tools:targetApi="34">
 
-        <!-- Metadados do módulo LSPosed (mantidos para o status) -->
+        <!-- Metadados do módulo LSPosed (mantidos para compatibilidade) -->
         <meta-data android:name="xposedmodule" android:value="true" />
         <meta-data android:name="xposeddescription" android:value="Discador Padrão com Auto-DTMF integrado." />
         <meta-data android:name="xposedminversion" android:value="93" />
         <meta-data android:name="xposedscope" android:resource="@array/xposed_scope" />
 
-        <!-- Atividade Principal -->
+        <!-- Atividade Principal com abas (Discador | Em Ligação) -->
         <activity
             android:name=".ui.MainActivity"
             android:exported="true"
             android:label="Carioca Dialer"
+            android:launchMode="singleTask"
             android:theme="@style/Theme.DTMFAutoDialer">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- Filtros para ser reconhecido como Discador -->
+            <!-- Filtros para ser reconhecido como Discador Padrão -->
             <intent-filter>
                 <action android:name="android.intent.action.DIAL" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -56,18 +57,8 @@
             </intent-filter>
         </activity>
 
-        <!-- Atividade de Chamada em Andamento -->
-        <activity
-            android:name=".ui.InCallActivity"
-            android:exported="false"
-            android:launchMode="singleInstance"
-            android:screenOrientation="portrait"
-            android:showForAllUsers="true"
-            android:showOnLockScreen="true"
-            android:turnScreenOn="true" />
-
         <!-- O SERVIÇO MÁGICO: InCallService -->
-        <!-- É aqui que o Android entrega o controle da ligação para nós -->
+        <!-- O Android entrega o controle da ligação para este serviço -->
         <service
             android:name=".service.CariocaInCallService"
             android:permission="android.permission.BIND_INCALL_SERVICE"
@@ -80,7 +71,7 @@
             </intent-filter>
         </service>
 
-        <!-- Widget flutuante (opcional agora, mas mantido para utilidade) -->
+        <!-- Widget flutuante (modo alternativo sem ser discador padrão) -->
         <service
             android:name=".service.FloatingWidgetService"
             android:exported="false"

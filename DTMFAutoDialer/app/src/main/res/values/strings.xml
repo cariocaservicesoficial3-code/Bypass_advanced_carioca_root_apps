@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">DTMF Auto Dialer</string>
-    <string name="module_description">Auto-digita sequência de números DTMF durante ligações. Cole CPF, telefone ou qualquer sequência numérica e o módulo digita automaticamente no teclado do telefone.</string>
+    <string name="app_name">Carioca Dialer</string>
+    <string name="module_description">Discador Padrão com Auto-DTMF integrado. Faz ligações e digita sequências DTMF automaticamente via API oficial do Android.</string>
 </resources>
