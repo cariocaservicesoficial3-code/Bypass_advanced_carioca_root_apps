@@ -14,6 +14,7 @@ import android.util.Log;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
+import de.robv.android.xposed.XC_MethodReplacement;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
@@ -30,12 +31,15 @@ import java.util.List;
  * Funciona com qualquer app de telefone (Google Phone, Samsung Phone, AOSP Dialer, etc.)
  * pois hookamos a API do framework Android, não classes específicas do app.
  *
+ * Também hookamos o próprio app do módulo para sinalizar que está ativo no LSPosed.
+ *
  * Baseado na engenharia reversa do Google Phone (com.google.android.dialer) v218.0
  * que revelou o uso de android.telecom.Call.playDtmfTone() / stopDtmfTone()
  */
 public class MainHook implements IXposedHookLoadPackage {
 
     private static final String TAG = "DTMFAutoDialer";
+    private static final String SELF_PACKAGE = "com.carioca.dtmfautodialer";
 
     // Ação do broadcast para receber sequência de dígitos do widget flutuante
     public static final String ACTION_SEND_DTMF_SEQUENCE = "com.carioca.dtmfautodialer.SEND_DTMF_SEQUENCE";
@@ -61,7 +65,34 @@ public class MainHook implements IXposedHookLoadPackage {
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
-        // Verificar se é um dos apps de telefone alvo
+
+        // ============================================================
+        // HOOK PARA O PRÓPRIO APP DO MÓDULO
+        // Sinaliza que o módulo está ativo no LSPosed
+        // ============================================================
+        if (lpparam.packageName.equals(SELF_PACKAGE)) {
+            XposedBridge.log(TAG + ": Hooking self package to set module active status");
+
+            try {
+                XposedHelpers.findAndHookMethod(
+                        SELF_PACKAGE + ".ui.MainActivity",
+                        lpparam.classLoader,
+                        "isModuleActive",
+                        XC_MethodReplacement.returnConstant(true)
+                );
+                XposedBridge.log(TAG + ": isModuleActive() hooked successfully - will return true");
+            } catch (Throwable t) {
+                XposedBridge.log(TAG + ": Error hooking isModuleActive: " + t.getMessage());
+            }
+
+            // Não retornar aqui - pode ser que o app do módulo também
+            // precise de outros hooks se for adicionado ao escopo
+            return;
+        }
+
+        // ============================================================
+        // HOOKS PARA APPS DE TELEFONE
+        // ============================================================
         boolean isTargetPackage = false;
         for (String pkg : DIALER_PACKAGES) {
             if (lpparam.packageName.equals(pkg)) {
@@ -72,71 +103,81 @@ public class MainHook implements IXposedHookLoadPackage {
 
         if (!isTargetPackage) return;
 
-        XposedBridge.log(TAG + ": Hooking package: " + lpparam.packageName);
+        XposedBridge.log(TAG + ": Hooking dialer package: " + lpparam.packageName);
 
         // ============================================================
         // HOOK 1: InCallService.onCallAdded(Call)
         // Captura quando uma nova chamada é adicionada (ativa)
         // ============================================================
-        XposedHelpers.findAndHookMethod(
-                "android.telecom.InCallService",
-                lpparam.classLoader,
-                "onCallAdded",
-                Call.class,
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        Call call = (Call) param.args[0];
-                        sActiveCall = call;
-                        XposedBridge.log(TAG + ": Call added! State: " + call.getState());
+        try {
+            XposedHelpers.findAndHookMethod(
+                    "android.telecom.InCallService",
+                    lpparam.classLoader,
+                    "onCallAdded",
+                    Call.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                            Call call = (Call) param.args[0];
+                            sActiveCall = call;
+                            XposedBridge.log(TAG + ": Call added! State: " + call.getState());
 
-                        // Registrar callback para monitorar mudanças de estado
-                        call.registerCallback(new Call.Callback() {
-                            @Override
-                            public void onStateChanged(Call call, int state) {
-                                XposedBridge.log(TAG + ": Call state changed to: " + state);
-                                if (state == Call.STATE_ACTIVE) {
-                                    sActiveCall = call;
-                                    broadcastCallState(true);
-                                } else if (state == Call.STATE_DISCONNECTED ||
-                                        state == Call.STATE_DISCONNECTING) {
-                                    sActiveCall = null;
-                                    sIsPlaying = false;
-                                    broadcastCallState(false);
+                            // Registrar callback para monitorar mudanças de estado
+                            call.registerCallback(new Call.Callback() {
+                                @Override
+                                public void onStateChanged(Call call, int state) {
+                                    XposedBridge.log(TAG + ": Call state changed to: " + state);
+                                    if (state == Call.STATE_ACTIVE) {
+                                        sActiveCall = call;
+                                        broadcastCallState(true);
+                                    } else if (state == Call.STATE_DISCONNECTED ||
+                                            state == Call.STATE_DISCONNECTING) {
+                                        sActiveCall = null;
+                                        sIsPlaying = false;
+                                        broadcastCallState(false);
+                                    }
                                 }
+                            });
+
+                            // Registrar o receiver para receber comandos DTMF
+                            registerDtmfReceiver();
+
+                            // Notificar que há chamada ativa
+                            if (call.getState() == Call.STATE_ACTIVE) {
+                                broadcastCallState(true);
                             }
-                        });
-
-                        // Registrar o receiver para receber comandos DTMF
-                        registerDtmfReceiver();
-
-                        // Notificar que há chamada ativa
-                        if (call.getState() == Call.STATE_ACTIVE) {
-                            broadcastCallState(true);
                         }
                     }
-                }
-        );
+            );
+            XposedBridge.log(TAG + ": onCallAdded hook installed");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": Error hooking onCallAdded: " + t.getMessage());
+        }
 
         // ============================================================
         // HOOK 2: InCallService.onCallRemoved(Call)
         // Captura quando uma chamada é removida (encerrada)
         // ============================================================
-        XposedHelpers.findAndHookMethod(
-                "android.telecom.InCallService",
-                lpparam.classLoader,
-                "onCallRemoved",
-                Call.class,
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        XposedBridge.log(TAG + ": Call removed!");
-                        sActiveCall = null;
-                        sIsPlaying = false;
-                        broadcastCallState(false);
+        try {
+            XposedHelpers.findAndHookMethod(
+                    "android.telecom.InCallService",
+                    lpparam.classLoader,
+                    "onCallRemoved",
+                    Call.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                            XposedBridge.log(TAG + ": Call removed!");
+                            sActiveCall = null;
+                            sIsPlaying = false;
+                            broadcastCallState(false);
+                        }
                     }
-                }
-        );
+            );
+            XposedBridge.log(TAG + ": onCallRemoved hook installed");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": Error hooking onCallRemoved: " + t.getMessage());
+        }
 
         XposedBridge.log(TAG + ": All hooks installed successfully for " + lpparam.packageName);
     }
@@ -201,6 +242,7 @@ public class MainHook implements IXposedHookLoadPackage {
     private static void sendDtmfSequence(String digits, int delayMs) {
         if (sActiveCall == null) {
             XposedBridge.log(TAG + ": No active call to send DTMF!");
+            broadcastError("Nenhuma chamada ativa!");
             return;
         }
 
@@ -240,8 +282,12 @@ public class MainHook implements IXposedHookLoadPackage {
 
                     // Parar o tom após 150ms (duração do tom)
                     sHandler.postDelayed(() -> {
-                        if (sActiveCall != null) {
-                            sActiveCall.stopDtmfTone();
+                        try {
+                            if (sActiveCall != null) {
+                                sActiveCall.stopDtmfTone();
+                            }
+                        } catch (Exception e) {
+                            XposedBridge.log(TAG + ": Error stopping tone: " + e.getMessage());
                         }
 
                         // Broadcast de progresso
@@ -324,6 +370,22 @@ public class MainHook implements IXposedHookLoadPackage {
             context.sendBroadcast(intent);
         } catch (Exception e) {
             XposedBridge.log(TAG + ": Error broadcasting complete: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Envia broadcast de erro para o widget
+     */
+    private static void broadcastError(String message) {
+        try {
+            Context context = AndroidAppHelper.currentApplication();
+            if (context == null) return;
+
+            Intent intent = new Intent("com.carioca.dtmfautodialer.DTMF_ERROR");
+            intent.putExtra("error_message", message);
+            context.sendBroadcast(intent);
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": Error broadcasting error: " + e.getMessage());
         }
     }
 }

@@ -2,6 +2,7 @@
 <resources>
     <!-- Escopo do módulo LSPosed - apps de telefone alvo -->
     <string-array name="xposed_scope">
+        <item>com.carioca.dtmfautodialer</item>
         <item>com.google.android.dialer</item>
         <item>com.android.dialer</item>
         <item>com.samsung.android.dialer</item>

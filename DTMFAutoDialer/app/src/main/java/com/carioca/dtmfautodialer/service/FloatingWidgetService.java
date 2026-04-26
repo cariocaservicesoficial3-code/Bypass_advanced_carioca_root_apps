@@ -82,6 +82,7 @@ public class FloatingWidgetService extends Service {
     private BroadcastReceiver progressReceiver;
     private BroadcastReceiver completeReceiver;
     private BroadcastReceiver callStateReceiver;
+    private BroadcastReceiver errorReceiver;
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -106,6 +107,34 @@ public class FloatingWidgetService extends Service {
             }
         }
         return START_STICKY;
+    }
+
+    /**
+     * Vibra com segurança - nunca crasha
+     */
+    private void safeVibrate(long milliseconds) {
+        try {
+            Vibrator vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+            if (vibrator != null && vibrator.hasVibrator()) {
+                vibrator.vibrate(milliseconds);
+            }
+        } catch (Exception e) {
+            // Ignorar silenciosamente - vibração é apenas feedback
+        }
+    }
+
+    /**
+     * Vibra padrão com segurança - nunca crasha
+     */
+    private void safeVibrate(long[] pattern, int repeat) {
+        try {
+            Vibrator vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+            if (vibrator != null && vibrator.hasVibrator()) {
+                vibrator.vibrate(pattern, repeat);
+            }
+        } catch (Exception e) {
+            // Ignorar silenciosamente - vibração é apenas feedback
+        }
     }
 
     /**
@@ -280,140 +309,153 @@ public class FloatingWidgetService extends Service {
         editBg.setStroke(dp(1), Color.parseColor("#4B5563"));
         editDigits.setBackground(editBg);
 
+        // Quando o EditText recebe foco, tornar a janela focável
+        editDigits.setOnFocusChangeListener((v, hasFocus) -> {
+            WindowManager.LayoutParams lp = (WindowManager.LayoutParams) floatingView.getLayoutParams();
+            if (hasFocus) {
+                lp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+            } else {
+                lp.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+            }
+            try {
+                windowManager.updateViewLayout(floatingView, lp);
+            } catch (Exception e) {
+                // Ignorar
+            }
+        });
+
         LinearLayout.LayoutParams editLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        editLp.topMargin = dp(4);
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        editLp.topMargin = dp(6);
         editDigits.setLayoutParams(editLp);
         panel.addView(editDigits);
 
-        // Contador de dígitos
-        final TextView tvDigitCount = new TextView(this);
-        tvDigitCount.setTextColor(Color.parseColor("#9CA3AF"));
-        tvDigitCount.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-        tvDigitCount.setPadding(0, dp(2), 0, 0);
-        panel.addView(tvDigitCount);
+        // Preview dos dígitos limpos
+        final TextView tvPreview = new TextView(this);
+        tvPreview.setTextColor(Color.parseColor("#9CA3AF"));
+        tvPreview.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        tvPreview.setPadding(0, dp(4), 0, 0);
+        tvPreview.setVisibility(View.GONE);
+        panel.addView(tvPreview);
 
         editDigits.addTextChangedListener(new TextWatcher() {
             @Override
             public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+
             @Override
             public void onTextChanged(CharSequence s, int start, int before, int count) {}
+
             @Override
             public void afterTextChanged(Editable s) {
                 String clean = s.toString().replaceAll("[^0-9*#]", "");
-                tvDigitCount.setText(clean.length() + " dígitos DTMF válidos");
+                if (!clean.isEmpty()) {
+                    tvPreview.setVisibility(View.VISIBLE);
+                    tvPreview.setText("Dígitos: " + clean + " (" + clean.length() + " dígitos)");
+                } else {
+                    tvPreview.setVisibility(View.GONE);
+                }
             }
         });
 
         // ---- Botão Colar ----
-        btnPaste = createStyledButton("COLAR DA ÁREA DE TRANSFERÊNCIA", "#6366F1");
+        btnPaste = createStyledButton("COLAR", "#6D28D9");
+        btnPaste.setOnClickListener(v -> pasteFromClipboard());
         LinearLayout.LayoutParams pasteLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(42));
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(40));
         pasteLp.topMargin = dp(8);
         btnPaste.setLayoutParams(pasteLp);
-        btnPaste.setOnClickListener(v -> pasteFromClipboard());
         panel.addView(btnPaste);
 
-        // ---- Configuração de delay ----
+        // ---- Delay config ----
         LinearLayout delayLayout = new LinearLayout(this);
         delayLayout.setOrientation(LinearLayout.HORIZONTAL);
         delayLayout.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams delayLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        delayLp.topMargin = dp(12);
-        delayLayout.setLayoutParams(delayLp);
+        delayLayout.setPadding(0, dp(10), 0, 0);
 
         TextView labelDelay = new TextView(this);
         labelDelay.setText("Delay: ");
         labelDelay.setTextColor(Color.parseColor("#D1D5DB"));
-        labelDelay.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        labelDelay.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         delayLayout.addView(labelDelay);
 
         tvDelay = new TextView(this);
-        tvDelay.setText("300ms");
+        tvDelay.setText(currentDelay + "ms");
         tvDelay.setTextColor(Color.parseColor("#A78BFA"));
-        tvDelay.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        tvDelay.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         tvDelay.setTypeface(null, android.graphics.Typeface.BOLD);
         delayLayout.addView(tvDelay);
 
         panel.addView(delayLayout);
 
         seekDelay = new SeekBar(this);
-        seekDelay.setMax(900); // 100ms a 1000ms
-        seekDelay.setProgress(200); // 300ms default (100 + 200)
-        seekDelay.setPadding(0, dp(4), 0, dp(4));
+        seekDelay.setMax(900);
+        seekDelay.setProgress(currentDelay - 100);
         seekDelay.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 currentDelay = progress + 100;
                 tvDelay.setText(currentDelay + "ms");
             }
+
             @Override
             public void onStartTrackingTouch(SeekBar seekBar) {}
+
             @Override
-            public void onStopTrackingTouch(SeekBar seekBar) {}
+            public void onStopTrackingTouch(SeekBar seekBar) {
+                SharedPreferences prefs = getSharedPreferences("dtmf_prefs", MODE_PRIVATE);
+                prefs.edit().putInt("delay_ms", currentDelay).apply();
+            }
         });
         panel.addView(seekDelay);
 
         // ---- Barra de progresso ----
+        progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progressBar.setVisibility(View.GONE);
+        LinearLayout.LayoutParams progressLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(8));
+        progressLp.topMargin = dp(8);
+        progressBar.setLayoutParams(progressLp);
+        panel.addView(progressBar);
+
         tvProgress = new TextView(this);
         tvProgress.setTextColor(Color.parseColor("#10B981"));
         tvProgress.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         tvProgress.setVisibility(View.GONE);
-        LinearLayout.LayoutParams progTextLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        progTextLp.topMargin = dp(8);
-        tvProgress.setLayoutParams(progTextLp);
+        tvProgress.setGravity(Gravity.CENTER);
         panel.addView(tvProgress);
 
-        progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        progressBar.setVisibility(View.GONE);
-        LinearLayout.LayoutParams progBarLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(8));
-        progBarLp.topMargin = dp(4);
-        progressBar.setLayoutParams(progBarLp);
-        panel.addView(progressBar);
-
         // ---- Botões de ação ----
-        LinearLayout actionLayout = new LinearLayout(this);
-        actionLayout.setOrientation(LinearLayout.HORIZONTAL);
-        actionLayout.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams actionLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        actionLp.topMargin = dp(12);
-        actionLayout.setLayoutParams(actionLp);
+        LinearLayout btnLayout = new LinearLayout(this);
+        btnLayout.setOrientation(LinearLayout.HORIZONTAL);
+        btnLayout.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams btnContainerLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        btnContainerLp.topMargin = dp(10);
+        btnLayout.setLayoutParams(btnContainerLp);
 
-        // Botão ENVIAR
+        // Botão DIGITAR
         btnSend = createStyledButton("DIGITAR", "#7C3AED");
-        LinearLayout.LayoutParams sendLp = new LinearLayout.LayoutParams(0, dp(48), 1);
-        sendLp.rightMargin = dp(6);
-        btnSend.setLayoutParams(sendLp);
         btnSend.setOnClickListener(v -> sendDtmfSequence());
-        actionLayout.addView(btnSend);
+        LinearLayout.LayoutParams sendLp = new LinearLayout.LayoutParams(0, dp(44), 1);
+        sendLp.rightMargin = dp(4);
+        btnSend.setLayoutParams(sendLp);
+        btnLayout.addView(btnSend);
 
         // Botão PARAR
         btnStop = createStyledButton("PARAR", "#EF4444");
-        LinearLayout.LayoutParams stopLp = new LinearLayout.LayoutParams(0, dp(48), 1);
-        stopLp.leftMargin = dp(6);
-        btnStop.setLayoutParams(stopLp);
         btnStop.setEnabled(false);
         btnStop.setAlpha(0.5f);
         btnStop.setOnClickListener(v -> stopDtmfSequence());
-        actionLayout.addView(btnStop);
+        LinearLayout.LayoutParams stopLp = new LinearLayout.LayoutParams(0, dp(44), 1);
+        stopLp.leftMargin = dp(4);
+        btnStop.setLayoutParams(stopLp);
+        btnLayout.addView(btnStop);
 
-        panel.addView(actionLayout);
-
-        // ---- Créditos ----
-        TextView credits = new TextView(this);
-        credits.setText("Carioca Services - DTMF Auto Dialer v1.0");
-        credits.setTextColor(Color.parseColor("#4B5563"));
-        credits.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
-        credits.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams creditsLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        creditsLp.topMargin = dp(8);
-        credits.setLayoutParams(creditsLp);
-        panel.addView(credits);
+        panel.addView(btnLayout);
 
         // Definir tamanho do painel
         LinearLayout.LayoutParams panelLp = new LinearLayout.LayoutParams(dp(300), LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -426,25 +468,25 @@ public class FloatingWidgetService extends Service {
     /**
      * Cria um botão estilizado
      */
-    private Button createStyledButton(String text, String colorHex) {
+    private Button createStyledButton(String text, String color) {
         Button btn = new Button(this);
         btn.setText(text);
         btn.setTextColor(Color.WHITE);
         btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         btn.setTypeface(null, android.graphics.Typeface.BOLD);
-        btn.setAllCaps(false);
+        btn.setAllCaps(true);
 
         GradientDrawable bg = new GradientDrawable();
         bg.setCornerRadius(dp(12));
-        bg.setColor(Color.parseColor(colorHex));
+        bg.setColor(Color.parseColor(color));
         btn.setBackground(bg);
-        btn.setPadding(dp(16), dp(8), dp(16), dp(8));
 
+        btn.setPadding(dp(12), dp(8), dp(12), dp(8));
         return btn;
     }
 
     /**
-     * Alterna entre view minimizada e expandida
+     * Alterna entre view expandida e minimizada
      */
     private void toggleExpanded() {
         isExpanded = !isExpanded;
@@ -453,22 +495,30 @@ public class FloatingWidgetService extends Service {
             minimizedView.setVisibility(View.GONE);
             expandedView.setVisibility(View.VISIBLE);
 
-            // Tornar focável quando expandido (para poder digitar)
+            // Tornar focável quando expandido (para EditText)
             WindowManager.LayoutParams params = (WindowManager.LayoutParams) floatingView.getLayoutParams();
-            params.flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
+            params.flags &= ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
             params.width = WindowManager.LayoutParams.WRAP_CONTENT;
             params.height = WindowManager.LayoutParams.WRAP_CONTENT;
-            windowManager.updateViewLayout(floatingView, params);
+            try {
+                windowManager.updateViewLayout(floatingView, params);
+            } catch (Exception e) {
+                // Ignorar
+            }
         } else {
-            expandedView.setVisibility(View.GONE);
             minimizedView.setVisibility(View.VISIBLE);
+            expandedView.setVisibility(View.GONE);
 
             // Voltar a ser não-focável quando minimizado
             WindowManager.LayoutParams params = (WindowManager.LayoutParams) floatingView.getLayoutParams();
-            params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+            params.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
             params.width = WindowManager.LayoutParams.WRAP_CONTENT;
             params.height = WindowManager.LayoutParams.WRAP_CONTENT;
-            windowManager.updateViewLayout(floatingView, params);
+            try {
+                windowManager.updateViewLayout(floatingView, params);
+            } catch (Exception e) {
+                // Ignorar
+            }
         }
     }
 
@@ -476,25 +526,25 @@ public class FloatingWidgetService extends Service {
      * Configura o listener de arrastar para mover o widget
      */
     private void setupDragListener(WindowManager.LayoutParams params) {
-        final int[] lastTouchX = {0};
-        final int[] lastTouchY = {0};
-        final int[] initialX = {0};
-        final int[] initialY = {0};
-        final boolean[] isDragging = {false};
+        final int[] initialX = new int[1];
+        final int[] initialY = new int[1];
+        final float[] initialTouchX = new float[1];
+        final float[] initialTouchY = new float[1];
+        final boolean[] isDragging = new boolean[1];
 
         minimizedView.setOnTouchListener((v, event) -> {
             switch (event.getAction()) {
                 case MotionEvent.ACTION_DOWN:
-                    lastTouchX[0] = (int) event.getRawX();
-                    lastTouchY[0] = (int) event.getRawY();
                     initialX[0] = params.x;
                     initialY[0] = params.y;
+                    initialTouchX[0] = event.getRawX();
+                    initialTouchY[0] = event.getRawY();
                     isDragging[0] = false;
                     return true;
 
                 case MotionEvent.ACTION_MOVE:
-                    int dx = (int) event.getRawX() - lastTouchX[0];
-                    int dy = (int) event.getRawY() - lastTouchY[0];
+                    int dx = (int) (event.getRawX() - initialTouchX[0]);
+                    int dy = (int) (event.getRawY() - initialTouchY[0]);
 
                     if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
                         isDragging[0] = true;
@@ -502,7 +552,11 @@ public class FloatingWidgetService extends Service {
 
                     params.x = initialX[0] + dx;
                     params.y = initialY[0] + dy;
-                    windowManager.updateViewLayout(floatingView, params);
+                    try {
+                        windowManager.updateViewLayout(floatingView, params);
+                    } catch (Exception e) {
+                        // Ignorar
+                    }
                     return true;
 
                 case MotionEvent.ACTION_UP:
@@ -529,11 +583,8 @@ public class FloatingWidgetService extends Service {
                         editDigits.setText(text);
                         editDigits.setSelection(editDigits.getText().length());
 
-                        // Vibrar feedback
-                        Vibrator vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
-                        if (vibrator != null) {
-                            vibrator.vibrate(50);
-                        }
+                        // Vibrar feedback (seguro)
+                        safeVibrate(50);
 
                         Toast.makeText(this, "Colado: " + text, Toast.LENGTH_SHORT).show();
                     }
@@ -585,11 +636,8 @@ public class FloatingWidgetService extends Service {
         tvStatus.setText("Digitando DTMF...");
         tvStatus.setTextColor(Color.parseColor("#10B981"));
 
-        // Vibrar
-        Vibrator vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
-        if (vibrator != null) {
-            vibrator.vibrate(100);
-        }
+        // Vibrar feedback (seguro)
+        safeVibrate(100);
     }
 
     /**
@@ -608,12 +656,20 @@ public class FloatingWidgetService extends Service {
      * Reseta a UI para o estado inicial
      */
     private void resetUI() {
-        btnSend.setEnabled(true);
-        btnSend.setAlpha(1.0f);
-        btnStop.setEnabled(false);
-        btnStop.setAlpha(0.5f);
-        progressBar.setVisibility(View.GONE);
-        tvProgress.setVisibility(View.GONE);
+        if (btnSend != null) {
+            btnSend.setEnabled(true);
+            btnSend.setAlpha(1.0f);
+        }
+        if (btnStop != null) {
+            btnStop.setEnabled(false);
+            btnStop.setAlpha(0.5f);
+        }
+        if (progressBar != null) {
+            progressBar.setVisibility(View.GONE);
+        }
+        if (tvProgress != null) {
+            tvProgress.setVisibility(View.GONE);
+        }
     }
 
     /**
@@ -654,11 +710,8 @@ public class FloatingWidgetService extends Service {
                     tvMiniBadge.setText("OK");
                 }
 
-                // Vibrar conclusão
-                Vibrator vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
-                if (vibrator != null) {
-                    vibrator.vibrate(new long[]{0, 100, 100, 100}, -1);
-                }
+                // Vibrar conclusão (seguro)
+                safeVibrate(new long[]{0, 100, 100, 100}, -1);
 
                 Toast.makeText(FloatingWidgetService.this,
                         "Sequência DTMF concluída!", Toast.LENGTH_SHORT).show();
@@ -674,18 +727,35 @@ public class FloatingWidgetService extends Service {
             }
         };
 
+        // Receiver de erro
+        errorReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                String errorMsg = intent.getStringExtra("error_message");
+                if (errorMsg != null) {
+                    resetUI();
+                    tvStatus.setText("Erro: " + errorMsg);
+                    tvStatus.setTextColor(Color.parseColor("#EF4444"));
+                    Toast.makeText(FloatingWidgetService.this, errorMsg, Toast.LENGTH_LONG).show();
+                }
+            }
+        };
+
         IntentFilter progressFilter = new IntentFilter("com.carioca.dtmfautodialer.DTMF_PROGRESS");
         IntentFilter completeFilter = new IntentFilter("com.carioca.dtmfautodialer.DTMF_COMPLETE");
         IntentFilter callStateFilter = new IntentFilter(MainHook.ACTION_CALL_STATE_CHANGED);
+        IntentFilter errorFilter = new IntentFilter("com.carioca.dtmfautodialer.DTMF_ERROR");
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(progressReceiver, progressFilter, Context.RECEIVER_EXPORTED);
             registerReceiver(completeReceiver, completeFilter, Context.RECEIVER_EXPORTED);
             registerReceiver(callStateReceiver, callStateFilter, Context.RECEIVER_EXPORTED);
+            registerReceiver(errorReceiver, errorFilter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(progressReceiver, progressFilter);
             registerReceiver(completeReceiver, completeFilter);
             registerReceiver(callStateReceiver, callStateFilter);
+            registerReceiver(errorReceiver, errorFilter);
         }
     }
 
@@ -763,13 +833,18 @@ public class FloatingWidgetService extends Service {
         super.onDestroy();
 
         if (floatingView != null && windowManager != null) {
-            windowManager.removeView(floatingView);
+            try {
+                windowManager.removeView(floatingView);
+            } catch (Exception e) {
+                // Ignorar
+            }
         }
 
         try {
             if (progressReceiver != null) unregisterReceiver(progressReceiver);
             if (completeReceiver != null) unregisterReceiver(completeReceiver);
             if (callStateReceiver != null) unregisterReceiver(callStateReceiver);
+            if (errorReceiver != null) unregisterReceiver(errorReceiver);
         } catch (Exception e) {
             // Ignorar
         }
