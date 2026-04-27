@@ -53,6 +53,7 @@ public class MainActivity extends AppCompatActivity {
     private boolean isSpeakerOn = true;
     private boolean isTyping = false;
     private boolean isKeypadVisible = false;
+    private boolean isCalcardAutomationPending = false;
     private int currentDelay = 500;
     private Handler handler = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
@@ -131,14 +132,9 @@ public class MainActivity extends AppCompatActivity {
 
         btnCalcard.setOnClickListener(v -> {
             editPhoneNumber.setText("08006484455");
+            isCalcardAutomationPending = true; // Marcar que queremos a automação
             makeCall();
-            // Automação: Esperar 3s e digitar 2
-            handler.postDelayed(() -> {
-                if (CariocaInCallService.currentCall != null) {
-                    CariocaInCallService.sendDtmf('2');
-                    Toast.makeText(this, "Calcard: Digitando 2...", Toast.LENGTH_SHORT).show();
-                }
-            }, 3000);
+            Toast.makeText(this, "Calcard: Aguardando atendimento...", Toast.LENGTH_SHORT).show();
         });
 
         btnRedial.setOnClickListener(v -> {
@@ -291,12 +287,38 @@ public class MainActivity extends AppCompatActivity {
             layoutCallInfo.setVisibility(View.VISIBLE);
             String number = call.getDetails().getHandle().getSchemeSpecificPart();
             tvIncallNumber.setText(number);
-            tvCallState.setText("CHAMADA ATIVA");
+            
+            int state = call.getState();
+            String stateText = "EM CHAMADA";
+            
+            if (state == Call.STATE_ACTIVE) {
+                stateText = "CONECTADO (URA)";
+                // Se a automação Calcard estiver pendente e a chamada acabou de ficar ativa
+                if (isCalcardAutomationPending) {
+                    isCalcardAutomationPending = false; // Resetar flag
+                    // Esperar 4 segundos (entre 3 e 5) após o atendimento para digitar o 2
+                    handler.postDelayed(() -> {
+                        if (CariocaInCallService.currentCall != null && 
+                            CariocaInCallService.currentCall.getState() == Call.STATE_ACTIVE) {
+                            CariocaInCallService.sendDtmf('2');
+                            Toast.makeText(MainActivity.this, "Calcard: Digitando 2 automaticamente...", Toast.LENGTH_SHORT).show();
+                        }
+                    }, 4000);
+                }
+            } else if (state == Call.STATE_DIALING) {
+                stateText = "DISCANDO...";
+            } else if (state == Call.STATE_RINGING) {
+                stateText = "CHAMANDO...";
+            }
+            
+            tvCallState.setText(stateText);
+
             if (CariocaInCallService.instance != null && isSpeakerOn) {
                 CariocaInCallService.instance.setSpeaker(true);
             }
         } else {
             layoutCallInfo.setVisibility(View.GONE);
+            isCalcardAutomationPending = false; // Resetar se a chamada cair
         }
         updateMainButtonUI();
     }
