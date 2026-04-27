@@ -71,11 +71,7 @@
             </intent-filter>
         </service>
 
-        <!-- Widget flutuante (modo alternativo sem ser discador padrão) -->
-        <service
-            android:name=".service.FloatingWidgetService"
-            android:exported="false"
-            android:foregroundServiceType="phoneCall" />
+
 
     </application>
 </manifest>

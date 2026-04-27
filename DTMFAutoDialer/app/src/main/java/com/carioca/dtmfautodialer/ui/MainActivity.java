@@ -1,112 +1,267 @@
 package com.carioca.dtmfautodialer.ui;
 
+import android.app.role.RoleManager;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
+import android.content.res.ColorStateList;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.telecom.Call;
+import android.telecom.CallAudioState;
 import android.telecom.TelecomManager;
+import android.view.View;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.GridLayout;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.SeekBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.viewpager2.widget.ViewPager2;
 
 import com.carioca.dtmfautodialer.R;
 import com.carioca.dtmfautodialer.service.CariocaInCallService;
-import com.google.android.material.tabs.TabLayout;
-import com.google.android.material.tabs.TabLayoutMediator;
 
 /**
- * MainActivity v1.8 — Carioca Dialer
- *
- * Estrutura de abas:
- *   Aba 0 — "📞 DISCADOR"   : DialerFragment
- *   Aba 1 — "⌨ EM LIGAÇÃO" : InCallFragment
- *
- * Comportamento:
- * - Ao iniciar, verifica se é discador padrão e exibe status no header
- * - Ao navegar para a aba "Em Ligação", notifica o fragment (auto-cola clipboard)
- * - Quando o InCallService detecta uma chamada e abre esta Activity,
- *   navega automaticamente para a aba "Em Ligação"
+ * MainActivity v3.0 - TELA ÚNICA
+ * Reformulação total baseada no feedback do vídeo.
  */
 public class MainActivity extends AppCompatActivity {
 
-    public static final int REQUEST_DEFAULT_DIALER = 123;
+    private static final int REQUEST_DEFAULT_DIALER = 123;
     public static final String EXTRA_GO_TO_INCALL = "go_to_incall";
 
-    private TabLayout tabLayout;
-    private ViewPager2 viewPager;
-    private MainPagerAdapter pagerAdapter;
-    private TextView tvModuleStatus;
+    private TextView tvModuleStatus, tvIncallNumber, tvCallState, tvTypingStatus, tvDelayLabel;
+    private Button btnSetDefault, btnCalcard, btnSpeaker, btnMainAction;
+    private EditText editPhoneNumber, editDtmfSequence;
+    private LinearLayout layoutCallInfo, layoutDtmfProgress;
+    private ProgressBar progressDtmf;
+    private SeekBar seekDelay;
+    private GridLayout gridKeypad;
+
+    private boolean isSpeakerOn = true; // Viva-voz padrão ON
+    private boolean isTyping = false;
+    private int currentDelay = 500;
+    private Handler handler = new Handler(Looper.getMainLooper());
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        initViews();
+        setupKeypad();
+        setupListeners();
+        checkIfDefaultDialer();
+        
+        // Auto-viva-voz ao iniciar se houver chamada
+        if (CariocaInCallService.instance != null) {
+            CariocaInCallService.instance.setSpeaker(true);
+        }
+        
+        startCallStateUpdater();
+    }
+
+    private void initViews() {
         tvModuleStatus = findViewById(R.id.tv_module_status);
-        tabLayout = findViewById(R.id.tab_layout);
-        viewPager = findViewById(R.id.view_pager);
+        tvIncallNumber = findViewById(R.id.tv_incall_number);
+        tvCallState = findViewById(R.id.tv_call_state);
+        tvTypingStatus = findViewById(R.id.tv_typing_status);
+        tvDelayLabel = findViewById(R.id.tv_delay_label);
+        
+        btnSetDefault = findViewById(R.id.btn_set_default);
+        btnCalcard = findViewById(R.id.btn_calcard_consulta);
+        btnSpeaker = findViewById(R.id.btn_speaker);
+        btnMainAction = findViewById(R.id.btn_main_action);
+        
+        editPhoneNumber = findViewById(R.id.edit_phone_number);
+        editDtmfSequence = findViewById(R.id.edit_dtmf_sequence);
+        
+        layoutCallInfo = findViewById(R.id.layout_call_info);
+        layoutDtmfProgress = findViewById(R.id.layout_dtmf_progress);
+        progressDtmf = findViewById(R.id.progress_dtmf);
+        seekDelay = findViewById(R.id.seek_delay);
+        gridKeypad = findViewById(R.id.grid_keypad);
 
-        // Configurar adapter com as duas abas
-        pagerAdapter = new MainPagerAdapter(this);
-        viewPager.setAdapter(pagerAdapter);
+        updateSpeakerUI();
+    }
 
-        // Conectar TabLayout ao ViewPager2
-        new TabLayoutMediator(tabLayout, viewPager, (tab, position) -> {
-            if (position == 0) {
-                tab.setText("📞  DISCADOR");
-            } else {
-                tab.setText("⌨  EM LIGAÇÃO");
-            }
-        }).attach();
-
-        // Listener para notificar fragments quando a aba muda
-        tabLayout.addOnTabSelectedListener(new TabLayout.OnTabSelectedListener() {
-            @Override
-            public void onTabSelected(TabLayout.Tab tab) {
-                if (tab.getPosition() == 1) {
-                    // Usuário entrou na aba "Em Ligação"
-                    // Passar sequência pré-configurada da aba Discador
-                    String preDtmf = pagerAdapter.getDialerFragment().getPreDtmfSequence();
-                    if (!preDtmf.isEmpty()) {
-                        pagerAdapter.getInCallFragment().setDtmfSequence(preDtmf);
+    private void setupKeypad() {
+        for (int i = 0; i < gridKeypad.getChildCount(); i++) {
+            View v = gridKeypad.getChildAt(i);
+            if (v instanceof Button) {
+                final String key = (String) v.getTag();
+                v.setOnClickListener(view -> {
+                    String current = editPhoneNumber.getText().toString();
+                    editPhoneNumber.setText(current + key);
+                    
+                    // Se estiver em ligação, envia o DTMF na hora
+                    if (CariocaInCallService.currentCall != null) {
+                        CariocaInCallService.sendDtmf(key.charAt(0));
                     }
-                    // Notificar fragment (auto-cola clipboard se campo vazio)
-                    pagerAdapter.getInCallFragment().onTabSelected();
-                }
+                });
             }
-            @Override public void onTabUnselected(TabLayout.Tab tab) {}
-            @Override public void onTabReselected(TabLayout.Tab tab) {}
+        }
+    }
+
+    private void setupListeners() {
+        btnSetDefault.setOnClickListener(v -> requestDefaultDialerRole());
+        
+        btnCalcard.setOnClickListener(v -> {
+            editPhoneNumber.setText("08006484455");
+            makeCall();
         });
 
-        // Verificar se deve ir direto para aba Em Ligação
-        handleIntent(getIntent());
+        btnSpeaker.setOnClickListener(v -> {
+            isSpeakerOn = !isSpeakerOn;
+            if (CariocaInCallService.instance != null) {
+                CariocaInCallService.instance.setSpeaker(isSpeakerOn);
+            }
+            updateSpeakerUI();
+        });
 
-        // Atualizar status de discador padrão
-        checkIfDefaultDialer();
+        btnMainAction.setOnClickListener(v -> {
+            if (CariocaInCallService.currentCall != null) {
+                // Se está em ligação e tem sequência, digita. Senão, desliga.
+                String dtmf = editDtmfSequence.getText().toString();
+                if (!dtmf.isEmpty() && !isTyping) {
+                    startDtmfTyping();
+                } else if (isTyping) {
+                    stopDtmfTyping();
+                } else {
+                    CariocaInCallService.currentCall.disconnect();
+                }
+            } else {
+                makeCall();
+            }
+        });
+
+        seekDelay.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                currentDelay = progress + 100;
+                tvDelayLabel.setText("Delay: " + currentDelay + "ms");
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+
+        // Auto-colar ao clicar no campo de sequência
+        editDtmfSequence.setOnFocusChangeListener((v, hasFocus) -> {
+            if (hasFocus) {
+                ClipboardManager cb = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                if (cb != null && cb.hasPrimaryClip()) {
+                    CharSequence text = cb.getPrimaryClip().getItemAt(0).getText();
+                    if (text != null && editDtmfSequence.getText().toString().isEmpty()) {
+                        editDtmfSequence.setText(text);
+                    }
+                }
+            }
+        });
     }
 
-    @Override
-    protected void onNewIntent(Intent intent) {
-        super.onNewIntent(intent);
-        setIntent(intent);
-        handleIntent(intent);
+    private void makeCall() {
+        String number = editPhoneNumber.getText().toString().trim();
+        if (number.isEmpty()) {
+            Toast.makeText(this, "Digite um número!", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Intent intent = new Intent(Intent.ACTION_CALL);
+        intent.setData(Uri.parse("tel:" + number));
+        startActivity(intent);
     }
 
-    @Override
-    protected void onResume() {
-        super.onResume();
-        checkIfDefaultDialer();
-        // Se há chamada ativa e estamos na aba Discador, sugerir ir para Em Ligação
-        if (CariocaInCallService.currentCall != null && viewPager.getCurrentItem() == 0) {
-            // Navegar automaticamente para a aba Em Ligação
-            viewPager.setCurrentItem(1, true);
+    private void startDtmfTyping() {
+        String sequence = editDtmfSequence.getText().toString().replaceAll("[^0-9*#]", "");
+        if (sequence.isEmpty()) return;
+
+        isTyping = true;
+        btnMainAction.setText("⏹ PARAR");
+        layoutDtmfProgress.setVisibility(View.VISIBLE);
+        progressDtmf.setMax(sequence.length());
+
+        final char[] chars = sequence.toCharArray();
+        for (int i = 0; i < chars.length; i++) {
+            final int index = i;
+            final char c = chars[i];
+            handler.postDelayed(() -> {
+                if (!isTyping) return;
+                CariocaInCallService.sendDtmf(c);
+                tvTypingStatus.setText("Digitando: " + c + " (" + (index + 1) + "/" + chars.length + ")");
+                progressDtmf.setProgress(index + 1);
+                if (index == chars.length - 1) stopDtmfTyping();
+            }, (long) i * currentDelay);
         }
     }
 
-    private void handleIntent(Intent intent) {
-        if (intent != null && intent.getBooleanExtra(EXTRA_GO_TO_INCALL, false)) {
-            // Navegar para aba Em Ligação
-            viewPager.post(() -> viewPager.setCurrentItem(1, true));
+    private void stopDtmfTyping() {
+        isTyping = false;
+        handler.post(() -> {
+            layoutDtmfProgress.setVisibility(View.GONE);
+            updateMainButtonUI();
+        });
+    }
+
+    private void updateSpeakerUI() {
+        if (isSpeakerOn) {
+            btnSpeaker.setText("🔊 VIVA-VOZ: ON");
+            btnSpeaker.setBackgroundTintList(ColorStateList.valueOf(0xFF10B981));
+        } else {
+            btnSpeaker.setText("🔈 VIVA-VOZ: OFF");
+            btnSpeaker.setBackgroundTintList(ColorStateList.valueOf(0xFF4B5563));
         }
+    }
+
+    private void updateMainButtonUI() {
+        if (CariocaInCallService.currentCall != null) {
+            if (isTyping) {
+                btnMainAction.setText("⏹ PARAR");
+                btnMainAction.setBackgroundTintList(ColorStateList.valueOf(0xFFEF4444));
+            } else if (!editDtmfSequence.getText().toString().isEmpty()) {
+                btnMainAction.setText("⌨ DIGITAR DTMF");
+                btnMainAction.setBackgroundTintList(ColorStateList.valueOf(0xFF7C3AED));
+            } else {
+                btnMainAction.setText("📵 DESLIGAR");
+                btnMainAction.setBackgroundTintList(ColorStateList.valueOf(0xFFEF4444));
+            }
+        } else {
+            btnMainAction.setText("📞 LIGAR");
+            btnMainAction.setBackgroundTintList(ColorStateList.valueOf(0xFF10B981));
+        }
+    }
+
+    private void startCallStateUpdater() {
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                updateCallStatus();
+                handler.postDelayed(this, 1000);
+            }
+        });
+    }
+
+    private void updateCallStatus() {
+        Call call = CariocaInCallService.currentCall;
+        if (call != null) {
+            layoutCallInfo.setVisibility(View.VISIBLE);
+            String number = call.getDetails().getHandle().getSchemeSpecificPart();
+            tvIncallNumber.setText(number);
+            tvCallState.setText("CHAMADA ATIVA");
+            
+            // Auto-viva-voz se acabou de começar
+            if (CariocaInCallService.instance != null && isSpeakerOn) {
+                CariocaInCallService.instance.setSpeaker(true);
+            }
+        } else {
+            layoutCallInfo.setVisibility(View.GONE);
+        }
+        updateMainButtonUI();
     }
 
     private void checkIfDefaultDialer() {
@@ -115,23 +270,31 @@ public class MainActivity extends AppCompatActivity {
             String defaultDialer = telecomManager.getDefaultDialerPackage();
             if (defaultDialer != null && defaultDialer.equals(getPackageName())) {
                 tvModuleStatus.setText("✓ DISCADOR PADRÃO");
-                tvModuleStatus.setTextColor(0xFF10B981); // verde
+                tvModuleStatus.setTextColor(0xFF10B981);
+                btnSetDefault.setVisibility(View.GONE);
                 return;
             }
         }
-        
-        // Se cair aqui, não é o discador padrão ou telecomManager falhou
-        if (tvModuleStatus != null) {
-            tvModuleStatus.setText("✗ NÃO É PADRÃO");
-            tvModuleStatus.setTextColor(0xFFEF4444); // vermelho
+        tvModuleStatus.setText("✗ NÃO É PADRÃO");
+        tvModuleStatus.setTextColor(0xFFEF4444);
+        btnSetDefault.setVisibility(View.VISIBLE);
+    }
+
+    private void requestDefaultDialerRole() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            RoleManager roleManager = (RoleManager) getSystemService(ROLE_SERVICE);
+            Intent intent = roleManager.createRequestRoleIntent(RoleManager.ROLE_DIALER);
+            startActivityForResult(intent, REQUEST_DEFAULT_DIALER);
+        } else {
+            Intent intent = new Intent(TelecomManager.ACTION_CHANGE_DEFAULT_DIALER);
+            intent.putExtra(TelecomManager.EXTRA_CHANGE_DEFAULT_DIALER_PACKAGE_NAME, getPackageName());
+            startActivityForResult(intent, REQUEST_DEFAULT_DIALER);
         }
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQUEST_DEFAULT_DIALER) {
-            checkIfDefaultDialer();
-        }
+        if (requestCode == REQUEST_DEFAULT_DIALER) checkIfDefaultDialer();
     }
 }

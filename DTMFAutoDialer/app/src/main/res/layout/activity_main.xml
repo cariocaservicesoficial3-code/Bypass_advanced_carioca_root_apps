@@ -3,59 +3,219 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/background_dark"
-    android:orientation="vertical">
+    android:orientation="vertical"
+    android:background="#1E1B2E"
+    android:padding="16dp">
 
-    <!-- Header -->
-    <LinearLayout
+    <!-- Header com Status e Botão de Configuração -->
+    <RelativeLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="@color/card_dark"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:padding="16dp"
-        android:elevation="4dp">
-
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Carioca Dialer"
-            android:textColor="@color/text_primary"
-            android:textSize="20sp"
-            android:textStyle="bold" />
+        android:layout_marginBottom="12dp">
 
         <TextView
             android:id="@+id/tv_module_status"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:background="@drawable/card_background"
-            android:paddingStart="10dp"
-            android:paddingEnd="10dp"
-            android:paddingTop="4dp"
-            android:paddingBottom="4dp"
-            android:text="Verificando..."
+            android:text="✗ NÃO É PADRÃO"
+            android:textColor="#EF4444"
             android:textSize="11sp"
+            android:textStyle="bold"
+            android:layout_centerVertical="true" />
+
+        <Button
+            android:id="@+id/btn_set_default"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_alignParentEnd="true"
+            android:background="@drawable/button_secondary"
+            android:text="CONFIGURAR PADRÃO"
+            android:textColor="#FFFFFF"
+            android:textSize="10sp"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp" />
+    </RelativeLayout>
+
+    <!-- Info da Chamada (Aparece apenas durante ligação) -->
+    <LinearLayout
+        android:id="@+id/layout_call_info"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:background="@drawable/card_background"
+        android:padding="12dp"
+        android:layout_marginBottom="12dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/tv_incall_number"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Desconhecido"
+            android:textColor="#FFFFFF"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:gravity="center" />
+
+        <TextView
+            android:id="@+id/tv_call_state"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="EM CHAMADA"
+            android:textColor="#A78BFA"
+            android:textSize="12sp"
+            android:gravity="center" />
+    </LinearLayout>
+
+    <!-- Botão CALCARD CONSULTA -->
+    <Button
+        android:id="@+id/btn_calcard_consulta"
+        android:layout_width="match_parent"
+        android:layout_height="52dp"
+        android:layout_marginBottom="12dp"
+        android:background="@drawable/button_call"
+        android:text="💳  CALCARD CONSULTA"
+        android:textColor="#FFFFFF"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+
+    <!-- Campo de Número de Telefone -->
+    <EditText
+        android:id="@+id/edit_phone_number"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:background="@drawable/edit_background"
+        android:hint="Número para ligar"
+        android:textColorHint="#6B7280"
+        android:textColor="#FFFFFF"
+        android:textSize="22sp"
+        android:gravity="center"
+        android:inputType="phone"
+        android:layout_marginBottom="12dp" />
+
+    <!-- MINI TECLADO NUMÉRICO -->
+    <GridLayout
+        android:id="@+id/grid_keypad"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:columnCount="3"
+        android:rowCount="4"
+        android:layout_marginBottom="12dp">
+
+        <Button style="@style/Widget.AppCompat.Button.Borderless" android:layout_width="60dp" android:layout_height="50dp" android:text="1" android:textColor="#FFFFFF" android:textSize="18sp" android:tag="1" />
+        <Button style="@style/Widget.AppCompat.Button.Borderless" android:layout_width="60dp" android:layout_height="50dp" android:text="2" android:textColor="#FFFFFF" android:textSize="18sp" android:tag="2" />
+        <Button style="@style/Widget.AppCompat.Button.Borderless" android:layout_width="60dp" android:layout_height="50dp" android:text="3" android:textColor="#FFFFFF" android:textSize="18sp" android:tag="3" />
+        <Button style="@style/Widget.AppCompat.Button.Borderless" android:layout_width="60dp" android:layout_height="50dp" android:text="4" android:textColor="#FFFFFF" android:textSize="18sp" android:tag="4" />
+        <Button style="@style/Widget.AppCompat.Button.Borderless" android:layout_width="60dp" android:layout_height="50dp" android:text="5" android:textColor="#FFFFFF" android:textSize="18sp" android:tag="5" />
+        <Button style="@style/Widget.AppCompat.Button.Borderless" android:layout_width="60dp" android:layout_height="50dp" android:text="6" android:textColor="#FFFFFF" android:textSize="18sp" android:tag="6" />
+        <Button style="@style/Widget.AppCompat.Button.Borderless" android:layout_width="60dp" android:layout_height="50dp" android:text="7" android:textColor="#FFFFFF" android:textSize="18sp" android:tag="7" />
+        <Button style="@style/Widget.AppCompat.Button.Borderless" android:layout_width="60dp" android:layout_height="50dp" android:text="8" android:textColor="#FFFFFF" android:textSize="18sp" android:tag="8" />
+        <Button style="@style/Widget.AppCompat.Button.Borderless" android:layout_width="60dp" android:layout_height="50dp" android:text="9" android:textColor="#FFFFFF" android:textSize="18sp" android:tag="9" />
+        <Button style="@style/Widget.AppCompat.Button.Borderless" android:layout_width="60dp" android:layout_height="50dp" android:text="*" android:textColor="#FFFFFF" android:textSize="18sp" android:tag="*" />
+        <Button style="@style/Widget.AppCompat.Button.Borderless" android:layout_width="60dp" android:layout_height="50dp" android:text="0" android:textColor="#FFFFFF" android:textSize="18sp" android:tag="0" />
+        <Button style="@style/Widget.AppCompat.Button.Borderless" android:layout_width="60dp" android:layout_height="50dp" android:text="#" android:textColor="#FFFFFF" android:textSize="18sp" android:tag="#" />
+    </GridLayout>
+
+    <!-- Campo de Sequência DTMF -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="SEQUÊNCIA PARA DIGITAR:"
+        android:textColor="#9CA3AF"
+        android:textSize="10sp"
+        android:layout_marginBottom="4dp" />
+
+    <EditText
+        android:id="@+id/edit_dtmf_sequence"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:background="@drawable/edit_background"
+        android:hint="Cole o CPF ou sequência aqui"
+        android:textColorHint="#4B5563"
+        android:textColor="#FFFFFF"
+        android:textSize="16sp"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:layout_marginBottom="12dp" />
+
+    <!-- Controles de Ação -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginBottom="12dp">
+
+        <Button
+            android:id="@+id/btn_speaker"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="8dp"
+            android:background="@drawable/button_secondary"
+            android:text="🔊 VIVA-VOZ"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btn_main_action"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_weight="1.5"
+            android:background="@drawable/button_call"
+            android:text="📞 LIGAR"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
             android:textStyle="bold" />
     </LinearLayout>
 
-    <!-- TabLayout -->
-    <com.google.android.material.tabs.TabLayout
-        android:id="@+id/tab_layout"
+    <!-- Barra de Progresso DTMF -->
+    <LinearLayout
+        android:id="@+id/layout_dtmf_progress"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="@color/card_dark"
-        app:tabGravity="fill"
-        app:tabMode="fixed"
-        app:tabSelectedTextColor="@color/purple_light"
-        app:tabTextColor="@color/text_secondary"
-        app:tabIndicatorColor="@color/purple_primary"
-        app:tabIndicatorHeight="3dp" />
+        android:orientation="vertical"
+        android:visibility="gone">
+        
+        <TextView
+            android:id="@+id/tv_typing_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Digitando..."
+            android:textColor="#10B981"
+            android:textSize="11sp"
+            android:gravity="center" />
+            
+        <ProgressBar
+            android:id="@+id/progress_dtmf"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="4dp" />
+    </LinearLayout>
 
-    <!-- ViewPager para as abas -->
-    <androidx.viewpager2.widget.ViewPager2
-        android:id="@+id/view_pager"
+    <!-- Configuração de Delay -->
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginTop="8dp">
+        
+        <TextView
+            android:id="@+id/tv_delay_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Delay: 500ms"
+            android:textColor="#6B7280"
+            android:textSize="10sp" />
+            
+        <SeekBar
+            android:id="@+id/seek_delay"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:max="1400"
+            android:progress="400" />
+    </LinearLayout>
 
 </LinearLayout>
