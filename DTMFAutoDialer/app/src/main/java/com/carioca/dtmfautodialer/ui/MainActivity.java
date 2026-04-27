@@ -43,7 +43,7 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_GO_TO_INCALL = "go_to_incall";
 
     private TextView tvModuleStatus, tvIncallNumber, tvCallState, tvTypingStatus, tvDelayLabel;
-    private Button btnSetDefault, btnCalcard, btnSpeaker, btnMainAction, btnToggleKeypad, btnHangupDedicated;
+    private Button btnSetDefault, btnCalcard, btnSpeaker, btnMainAction, btnToggleKeypad, btnHangupDedicated, btnClearDtmf;
     private EditText editPhoneNumber, editDtmfSequence;
     private LinearLayout layoutCallInfo, layoutDtmfProgress, layoutKeypadContainer;
     private ProgressBar progressDtmf;
@@ -90,6 +90,7 @@ public class MainActivity extends AppCompatActivity {
         btnMainAction = findViewById(R.id.btn_main_action);
         btnToggleKeypad = findViewById(R.id.btn_toggle_keypad);
         btnHangupDedicated = findViewById(R.id.btn_hangup_dedicated);
+        btnClearDtmf = findViewById(R.id.btn_clear_dtmf);
         
         editPhoneNumber = findViewById(R.id.edit_phone_number);
         editDtmfSequence = findViewById(R.id.edit_dtmf_sequence);
@@ -175,6 +176,11 @@ public class MainActivity extends AppCompatActivity {
             if (CariocaInCallService.currentCall != null) {
                 CariocaInCallService.currentCall.disconnect();
             }
+        });
+
+        btnClearDtmf.setOnClickListener(v -> {
+            editDtmfSequence.setText("");
+            Toast.makeText(this, "Campo limpo", Toast.LENGTH_SHORT).show();
         });
 
         seekDelay.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
