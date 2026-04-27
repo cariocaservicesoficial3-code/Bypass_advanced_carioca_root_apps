@@ -4,6 +4,7 @@ import android.app.role.RoleManager;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.net.Uri;
 import android.os.Build;
@@ -11,7 +12,6 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.telecom.Call;
-import android.telecom.CallAudioState;
 import android.telecom.TelecomManager;
 import android.view.View;
 import android.widget.Button;
@@ -29,42 +29,50 @@ import com.carioca.dtmfautodialer.R;
 import com.carioca.dtmfautodialer.service.CariocaInCallService;
 
 /**
- * MainActivity v3.0 - TELA ÚNICA
- * Reformulação total baseada no feedback do vídeo.
+ * MainActivity v3.1 - TELA ÚNICA EVOLUÍDA
+ * - Rediscagem (🔁)
+ * - Automação Calcard (Ligar + 3s + "2")
+ * - Teclado Retrátil
+ * - Botão Desligar Dedicado
  */
 public class MainActivity extends AppCompatActivity {
 
     private static final int REQUEST_DEFAULT_DIALER = 123;
+    private static final String PREFS_NAME = "CariocaPrefs";
+    private static final String KEY_LAST_NUMBER = "last_number";
     public static final String EXTRA_GO_TO_INCALL = "go_to_incall";
 
     private TextView tvModuleStatus, tvIncallNumber, tvCallState, tvTypingStatus, tvDelayLabel;
-    private Button btnSetDefault, btnCalcard, btnSpeaker, btnMainAction;
+    private Button btnSetDefault, btnCalcard, btnSpeaker, btnMainAction, btnRedial, btnToggleKeypad, btnHangupDedicated;
     private EditText editPhoneNumber, editDtmfSequence;
-    private LinearLayout layoutCallInfo, layoutDtmfProgress;
+    private LinearLayout layoutCallInfo, layoutDtmfProgress, layoutKeypadContainer;
     private ProgressBar progressDtmf;
     private SeekBar seekDelay;
     private GridLayout gridKeypad;
 
-    private boolean isSpeakerOn = true; // Viva-voz padrão ON
+    private boolean isSpeakerOn = true;
     private boolean isTyping = false;
+    private boolean isKeypadVisible = false;
     private int currentDelay = 500;
     private Handler handler = new Handler(Looper.getMainLooper());
+    private SharedPreferences prefs;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        
         initViews();
         setupKeypad();
         setupListeners();
         checkIfDefaultDialer();
         
-        // Auto-viva-voz ao iniciar se houver chamada
-        if (CariocaInCallService.instance != null) {
-            CariocaInCallService.instance.setSpeaker(true);
-        }
-        
+        // Carregar último número
+        String lastNum = prefs.getString(KEY_LAST_NUMBER, "");
+        if (!lastNum.isEmpty()) editPhoneNumber.setText(lastNum);
+
         startCallStateUpdater();
     }
 
@@ -79,12 +87,16 @@ public class MainActivity extends AppCompatActivity {
         btnCalcard = findViewById(R.id.btn_calcard_consulta);
         btnSpeaker = findViewById(R.id.btn_speaker);
         btnMainAction = findViewById(R.id.btn_main_action);
+        btnRedial = findViewById(R.id.btn_redial);
+        btnToggleKeypad = findViewById(R.id.btn_toggle_keypad);
+        btnHangupDedicated = findViewById(R.id.btn_hangup_dedicated);
         
         editPhoneNumber = findViewById(R.id.edit_phone_number);
         editDtmfSequence = findViewById(R.id.edit_dtmf_sequence);
         
         layoutCallInfo = findViewById(R.id.layout_call_info);
         layoutDtmfProgress = findViewById(R.id.layout_dtmf_progress);
+        layoutKeypadContainer = findViewById(R.id.layout_keypad_container);
         progressDtmf = findViewById(R.id.progress_dtmf);
         seekDelay = findViewById(R.id.seek_delay);
         gridKeypad = findViewById(R.id.grid_keypad);
@@ -100,8 +112,6 @@ public class MainActivity extends AppCompatActivity {
                 v.setOnClickListener(view -> {
                     String current = editPhoneNumber.getText().toString();
                     editPhoneNumber.setText(current + key);
-                    
-                    // Se estiver em ligação, envia o DTMF na hora
                     if (CariocaInCallService.currentCall != null) {
                         CariocaInCallService.sendDtmf(key.charAt(0));
                     }
@@ -113,9 +123,41 @@ public class MainActivity extends AppCompatActivity {
     private void setupListeners() {
         btnSetDefault.setOnClickListener(v -> requestDefaultDialerRole());
         
+        btnToggleKeypad.setOnClickListener(v -> {
+            isKeypadVisible = !isKeypadVisible;
+            layoutKeypadContainer.setVisibility(isKeypadVisible ? View.VISIBLE : View.GONE);
+            btnToggleKeypad.setText(isKeypadVisible ? "✖" : "⌨");
+        });
+
         btnCalcard.setOnClickListener(v -> {
             editPhoneNumber.setText("08006484455");
             makeCall();
+            // Automação: Esperar 3s e digitar 2
+            handler.postDelayed(() -> {
+                if (CariocaInCallService.currentCall != null) {
+                    CariocaInCallService.sendDtmf('2');
+                    Toast.makeText(this, "Calcard: Digitando 2...", Toast.LENGTH_SHORT).show();
+                }
+            }, 3000);
+        });
+
+        btnRedial.setOnClickListener(v -> {
+            String lastNum = prefs.getString(KEY_LAST_NUMBER, "");
+            if (lastNum.isEmpty()) {
+                Toast.makeText(this, "Nenhum número anterior", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            
+            // Matar chamada atual se houver
+            if (CariocaInCallService.currentCall != null) {
+                CariocaInCallService.currentCall.disconnect();
+            }
+            
+            // Ligar novamente após pequeno delay para garantir o hangup
+            handler.postDelayed(() -> {
+                editPhoneNumber.setText(lastNum);
+                makeCall();
+            }, 800);
         });
 
         btnSpeaker.setOnClickListener(v -> {
@@ -128,17 +170,20 @@ public class MainActivity extends AppCompatActivity {
 
         btnMainAction.setOnClickListener(v -> {
             if (CariocaInCallService.currentCall != null) {
-                // Se está em ligação e tem sequência, digita. Senão, desliga.
                 String dtmf = editDtmfSequence.getText().toString();
                 if (!dtmf.isEmpty() && !isTyping) {
                     startDtmfTyping();
                 } else if (isTyping) {
                     stopDtmfTyping();
-                } else {
-                    CariocaInCallService.currentCall.disconnect();
                 }
             } else {
                 makeCall();
+            }
+        });
+
+        btnHangupDedicated.setOnClickListener(v -> {
+            if (CariocaInCallService.currentCall != null) {
+                CariocaInCallService.currentCall.disconnect();
             }
         });
 
@@ -151,19 +196,6 @@ public class MainActivity extends AppCompatActivity {
             @Override public void onStartTrackingTouch(SeekBar seekBar) {}
             @Override public void onStopTrackingTouch(SeekBar seekBar) {}
         });
-
-        // Auto-colar ao clicar no campo de sequência
-        editDtmfSequence.setOnFocusChangeListener((v, hasFocus) -> {
-            if (hasFocus) {
-                ClipboardManager cb = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-                if (cb != null && cb.hasPrimaryClip()) {
-                    CharSequence text = cb.getPrimaryClip().getItemAt(0).getText();
-                    if (text != null && editDtmfSequence.getText().toString().isEmpty()) {
-                        editDtmfSequence.setText(text);
-                    }
-                }
-            }
-        });
     }
 
     private void makeCall() {
@@ -172,6 +204,10 @@ public class MainActivity extends AppCompatActivity {
             Toast.makeText(this, "Digite um número!", Toast.LENGTH_SHORT).show();
             return;
         }
+        
+        // Salvar último número
+        prefs.edit().putString(KEY_LAST_NUMBER, number).apply();
+        
         Intent intent = new Intent(Intent.ACTION_CALL);
         intent.setData(Uri.parse("tel:" + number));
         startActivity(intent);
@@ -182,9 +218,9 @@ public class MainActivity extends AppCompatActivity {
         if (sequence.isEmpty()) return;
 
         isTyping = true;
-        btnMainAction.setText("⏹ PARAR");
         layoutDtmfProgress.setVisibility(View.VISIBLE);
         progressDtmf.setMax(sequence.length());
+        updateMainButtonUI();
 
         final char[] chars = sequence.toCharArray();
         for (int i = 0; i < chars.length; i++) {
@@ -210,10 +246,10 @@ public class MainActivity extends AppCompatActivity {
 
     private void updateSpeakerUI() {
         if (isSpeakerOn) {
-            btnSpeaker.setText("🔊 VIVA-VOZ: ON");
+            btnSpeaker.setText("🔊");
             btnSpeaker.setBackgroundTintList(ColorStateList.valueOf(0xFF10B981));
         } else {
-            btnSpeaker.setText("🔈 VIVA-VOZ: OFF");
+            btnSpeaker.setText("🔈");
             btnSpeaker.setBackgroundTintList(ColorStateList.valueOf(0xFF4B5563));
         }
     }
@@ -227,12 +263,15 @@ public class MainActivity extends AppCompatActivity {
                 btnMainAction.setText("⌨ DIGITAR DTMF");
                 btnMainAction.setBackgroundTintList(ColorStateList.valueOf(0xFF7C3AED));
             } else {
-                btnMainAction.setText("📵 DESLIGAR");
-                btnMainAction.setBackgroundTintList(ColorStateList.valueOf(0xFFEF4444));
+                // Se estiver em ligação e sem DTMF, o botão principal pode ser redundante ou oculto
+                btnMainAction.setText("CHAMADA ATIVA");
+                btnMainAction.setBackgroundTintList(ColorStateList.valueOf(0xFF4B5563));
             }
+            btnHangupDedicated.setVisibility(View.VISIBLE);
         } else {
             btnMainAction.setText("📞 LIGAR");
             btnMainAction.setBackgroundTintList(ColorStateList.valueOf(0xFF10B981));
+            btnHangupDedicated.setVisibility(View.GONE);
         }
     }
 
@@ -253,8 +292,6 @@ public class MainActivity extends AppCompatActivity {
             String number = call.getDetails().getHandle().getSchemeSpecificPart();
             tvIncallNumber.setText(number);
             tvCallState.setText("CHAMADA ATIVA");
-            
-            // Auto-viva-voz se acabou de começar
             if (CariocaInCallService.instance != null && isSpeakerOn) {
                 CariocaInCallService.instance.setSpeaker(true);
             }
