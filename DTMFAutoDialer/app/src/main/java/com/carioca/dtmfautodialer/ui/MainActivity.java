@@ -43,7 +43,7 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_GO_TO_INCALL = "go_to_incall";
 
     private TextView tvModuleStatus, tvIncallNumber, tvCallState, tvTypingStatus, tvDelayLabel;
-    private Button btnSetDefault, btnCalcard, btnSpeaker, btnMainAction, btnRedial, btnToggleKeypad, btnHangupDedicated;
+    private Button btnSetDefault, btnCalcard, btnSpeaker, btnMainAction, btnToggleKeypad, btnHangupDedicated;
     private EditText editPhoneNumber, editDtmfSequence;
     private LinearLayout layoutCallInfo, layoutDtmfProgress, layoutKeypadContainer;
     private ProgressBar progressDtmf;
@@ -88,7 +88,6 @@ public class MainActivity extends AppCompatActivity {
         btnCalcard = findViewById(R.id.btn_calcard_consulta);
         btnSpeaker = findViewById(R.id.btn_speaker);
         btnMainAction = findViewById(R.id.btn_main_action);
-        btnRedial = findViewById(R.id.btn_redial);
         btnToggleKeypad = findViewById(R.id.btn_toggle_keypad);
         btnHangupDedicated = findViewById(R.id.btn_hangup_dedicated);
         
@@ -131,29 +130,19 @@ public class MainActivity extends AppCompatActivity {
         });
 
         btnCalcard.setOnClickListener(v -> {
-            editPhoneNumber.setText("08006484455");
-            isCalcardAutomationPending = true; // Marcar que queremos a automação
-            makeCall();
-            Toast.makeText(this, "Calcard: Aguardando atendimento...", Toast.LENGTH_SHORT).show();
-        });
+            final String calcardNum = "08006484455";
+            editPhoneNumber.setText(calcardNum);
+            isCalcardAutomationPending = true;
 
-        btnRedial.setOnClickListener(v -> {
-            String lastNum = prefs.getString(KEY_LAST_NUMBER, "");
-            if (lastNum.isEmpty()) {
-                Toast.makeText(this, "Nenhum número anterior", Toast.LENGTH_SHORT).show();
-                return;
-            }
-            
-            // Matar chamada atual se houver
             if (CariocaInCallService.currentCall != null) {
+                // Matar chamada atual e religar
                 CariocaInCallService.currentCall.disconnect();
-            }
-            
-            // Ligar novamente após pequeno delay para garantir o hangup
-            handler.postDelayed(() -> {
-                editPhoneNumber.setText(lastNum);
+                Toast.makeText(this, "Reiniciando chamada Calcard...", Toast.LENGTH_SHORT).show();
+                handler.postDelayed(this::makeCall, 800);
+            } else {
                 makeCall();
-            }, 800);
+                Toast.makeText(this, "Calcard: Aguardando atendimento...", Toast.LENGTH_SHORT).show();
+            }
         });
 
         btnSpeaker.setOnClickListener(v -> {
@@ -171,6 +160,11 @@ public class MainActivity extends AppCompatActivity {
                     startDtmfTyping();
                 } else if (isTyping) {
                     stopDtmfTyping();
+                } else {
+                    // Se clicar em Ligar com chamada ativa e sem DTMF, ele "reinicia" a chamada
+                    CariocaInCallService.currentCall.disconnect();
+                    Toast.makeText(this, "Reiniciando ligação...", Toast.LENGTH_SHORT).show();
+                    handler.postDelayed(this::makeCall, 800);
                 }
             } else {
                 makeCall();

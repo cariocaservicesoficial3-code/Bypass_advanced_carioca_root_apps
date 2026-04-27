@@ -167,16 +167,6 @@
         android:layout_marginBottom="8dp">
 
         <Button
-            android:id="@+id/btn_redial"
-            android:layout_width="52dp"
-            android:layout_height="52dp"
-            android:layout_marginEnd="8dp"
-            android:background="@drawable/button_secondary"
-            android:text="🔁"
-            android:textColor="#FFFFFF"
-            android:textSize="20sp" />
-
-        <Button
             android:id="@+id/btn_main_action"
             android:layout_width="0dp"
             android:layout_height="52dp"
@@ -189,13 +179,13 @@
 
         <Button
             android:id="@+id/btn_speaker"
-            android:layout_width="52dp"
+            android:layout_width="56dp"
             android:layout_height="52dp"
             android:layout_marginStart="8dp"
             android:background="@drawable/button_secondary"
             android:text="🔊"
             android:textColor="#FFFFFF"
-            android:textSize="16sp" />
+            android:textSize="18sp" />
     </LinearLayout>
 
     <!-- Botão DESLIGAR DEDICADO -->
